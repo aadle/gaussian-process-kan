@@ -4,19 +4,16 @@ import jax.numpy as jnp
 
 def loss_ll(y_true, mean, covariance):
     """
-    Objective/loss function log-likelihood.
+    Computes the negative log-likelihood loss for a multivariate Gaussian.
 
-    How likely is it that our approximated parameters 'mean' and 'covariance'
-    can produce the true targets 'y_true'?
-
-    Parameters:
-    y_true (jax.numpy.array): Training targets
-    mean (jax.numpy.array): Pointwise mean approximated from predicted outputs
-    covariance (jax.numpy.array): Covariance approximated from predicted outputs
+    Args:
+        y_true (jax.numpy.array): True target values.
+        mean (jax.numpy.array): Predicted mean values.
+        covariance (jax.numpy.array): Predicted covariance matrix (assumed diagonal).
 
     Returns:
-    jax.numpy.array: log-likelihood of 'y_true', 'mean' and 'covariance'."""
-
+        jax.numpy.array: The negative log-likelihood of the targets under the predicted distribution.
+    """
     diag_elements = jnp.diag(covariance)
     covariance_inv = jnp.diag(1.0 / diag_elements)
     log_det = jnp.sum(jnp.log(diag_elements))
@@ -35,15 +32,14 @@ def loss_ll(y_true, mean, covariance):
 @jax.jit
 def get_learning_rate(epoch, initial_lr=0.0001):
     """
-    Simple learning rate scheduler reducing the learning rate over epochs.
+    Computes the learning rate for a given epoch using exponential decay.
 
-    Parameters:
-    epoch (int): Current epoch
-    initial_lr (int): Starting point of learning rate
+    Args:
+        epoch (int): The current training epoch.
+        initial_lr (float, optional): The initial learning rate. Defaults to 0.0001.
 
     Returns:
-    int: New learning rate determined from the current epoch
-
+        float: The decayed learning rate for the current epoch.
     """
     return initial_lr * (0.95 ** (epoch // 50))
 

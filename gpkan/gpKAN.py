@@ -34,34 +34,36 @@ class GPKAN:
         init_paramters=[
             1.0,
             1.0,
-        ],  # signal variance \sigma_f^2, and length scale
-        obs_stddev=1.0,  # noise variance \sigma_n^2
+        ],  # signal variance $\sigma_f^2$, and length scale
+        obs_stddev=1.0,  # noise variance $\sigma_n^2$
     ):
-        self.layers = layers
-        self.key = jr.key(seed)
-        self.parameter_transform = parameter_transform
+        self.layers = layers  # Integer array of layers
+        self.key = jr.key(seed)  # Random key
+        self.parameter_transform = parameter_transform  # WIP - Bijector transforming the kernel parameters to unconstrained space. Problem is
 
         # With the assumption that we will normalize our output, we set it to min 0 and max 1
-        self.grid_min = grid_min
-        self.grid_max = grid_max
-        self.n_grid_points = n_grid_points
+        self.grid_min = grid_min  # Minimum of latent inducing point position h
+        self.grid_max = grid_max  # Maximum of latent inducing point position h
+        self.n_grid_points = n_grid_points  # n latent inducing points
 
-        self.latent_grids = []
-        self.latent_supports = []
+        self.latent_grids = []  # List of all latent inducing point positions $\mathbf{h}_i$
+        self.latent_supports = []  # List of all latent inducing point values $\mathbf{h}_i$
 
-        self.kernel_parameters = []
+        self.kernel_parameters = []  # List of kernel parameters for each GP neuron
         self.init_parameters = init_paramters
 
         # ---------- GPJax parameters: ----------
         # With the assumption that we initialize all the GPs being the same, we
-        # can define their paramaters the same way
+        # can define their paramaters the same way.
 
-        self.obs_stddev = obs_stddev
+        # Choice of kernel, mean function and likelihood is hard coded here and
+        # must be changed here.
+
+        self.obs_stddev = obs_stddev  # noise variance $\sigma_n^2$
         self._kernel = gpx.kernels.RBF(
-            # variance=0.54132485, lengthscale=0.54132485
             variance=self.init_parameters[1],
             lengthscale=self.init_parameters[0],
-        )
+        )  # Initialization of kernel parameters, same for all GP neurons.
         self._mean_function = gpx.mean_functions.Zero()
         self._likelihood = gpx.likelihoods.Gaussian(
             num_datapoints=self.n_grid_points, obs_stddev=self.obs_stddev
@@ -72,7 +74,7 @@ class GPKAN:
         self.posterior = self._prior * self._likelihood
         self.graphdef, self.params, self.others = nnx.split(
             self.posterior, Parameter, ...
-        )
+        )  # Split unoptimized posterior in order to retrieve the parameters from the Posterior-object
 
         self.init_model()
 
@@ -84,16 +86,18 @@ class GPKAN:
         for nin, nout in zip(self.layers[:-1], self.layers[1:]):
             self.key, subkey = jr.split(self.key, num=2)
 
-            # Grid positions (latent x-values)
+            # Grid positions (latent induicng positions $\mathbf{h}$)
             latent_grid = jnp.linspace(
                 self.grid_min, self.grid_max, self.n_grid_points
             ).reshape(-1, 1)
             latent_grids = jnp.tile(latent_grid, (nin, nout, 1, 1))
             self.latent_grids.append(latent_grids)
 
-            # Grid values (latent y-values)
-            # Xavier initialization idea
-            xavier_init = jnp.sqrt(6 / (nin + nout))
+            # Grid positions (latent induicng positions $\mathbf{z}$)
+
+            xavier_init = jnp.sqrt(
+                6 / (nin + nout)
+            )  # Xavier initialization idea
             latent_supports = jr.uniform(
                 subkey,
                 shape=latent_grids.shape,
@@ -101,13 +105,18 @@ class GPKAN:
                 maxval=xavier_init,
             )
 
+            # Or alternatively, initialize $\mathbf{z}$ by drawing from a normal
+            # distribution N(0, 0.1)
+
             # latent_supports = (
             #     jr.normal(subkey, shape=latent_grids.shape) * 0.1 + 0
             # )
 
             self.latent_supports.append(latent_supports)
 
-            # Kernel parameters
+            # TODO: Explicitly copy the parameters rather than assigning it in
+            # this way as this method may have some undesied behavior
+            # Initialize kernel parameters for all GP neurons
             kernel_parameters = [
                 [self.params for _ in range(nout)] for _ in range(nin)
             ]
@@ -131,7 +140,6 @@ class GPKAN:
                         inverse=invert,
                     )
 
-    # TODO:
     def predictive_posterior(
         self,
         X_latent,
@@ -139,9 +147,13 @@ class GPKAN:
         X_in,
         gp_parameters,
     ):
-        D_latent = gpx.Dataset(X=X_latent, y=y_latent)
+        D_latent = gpx.Dataset(
+            X=X_latent, y=y_latent
+        )  # Latent inducing points converted to a gpx.Dataset
         parameters = gp_parameters
-        posterior = nnx.merge(self.graphdef, parameters, *self.others)
+        posterior = nnx.merge(
+            self.graphdef, parameters, *self.others
+        )  # Merge the kernel parameters back into a Posterior-object
 
         latent_dist = posterior.predict(
             X_in, train_data=D_latent
@@ -176,20 +188,25 @@ class GPKAN:
             key, *all_keys = jr.split(key, num=keys_needed + 1)
             all_keys = jnp.array(all_keys).reshape(nin, nout)
 
-            for nin_idx in range(nin):  # nin loop
+            for nin_idx in range(nin):  # Iterate over input dimension
                 act_in = act[:, nin_idx].reshape(-1, 1)
-                for nout_idx in range(nout):  # nout loop
+                for nout_idx in range(nout):  # Iterate over output dimension
+                    # Retrieve set of latent inducing points and kernel
+                    # parameters for the particular GP neuron
                     sample_key = all_keys[nin_idx, nout_idx]
-
                     X_latent = Xs_latent[layer_idx][nin_idx][nout_idx]
                     y_latent = ys_latent[layer_idx][nin_idx][nout_idx]
                     kernel_parameter = kernel_parameters[layer_idx][nin_idx][
                         nout_idx
                     ]
 
+                    # Calculate the predictive posterior for the current GP
+                    # neuron
                     posterior = self.predictive_posterior(
                         X_latent, y_latent, act_in, kernel_parameter
                     )
+                    # Sample from the predictive posterior. Shape corresponds to
+                    # (act.shape[0], nout)
                     posterior_sample = posterior.sample(
                         sample_shape=(), seed=sample_key
                     ).flatten()
