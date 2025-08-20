@@ -1,4 +1,4 @@
-# Kolmogorov-Arnold Networks with Gaussian Process activations
+# Kolmogorov-Arnold Networks with Gaussian Process activations (WIP)
 
 This is the codebase of my masters project where I explored Gaussian
 Processes as a replacement for the learnable splines activation function
