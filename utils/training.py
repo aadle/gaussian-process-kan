@@ -19,13 +19,10 @@ def loss_ll(y_true, mean, covariance):
     log_det = jnp.sum(jnp.log(diag_elements))
     y_true = y_true.flatten()
 
-    return -(
-        -0.5
-        * (
-            y_true.shape[0] * jnp.log(2 * jnp.pi)
-            + log_det
-            + (y_true - mean).T @ covariance_inv @ (y_true - mean)
-        )
+    return 0.5 * (
+        y_true.shape[0] * jnp.log(2 * jnp.pi)
+        + log_det
+        + (y_true - mean).T @ covariance_inv @ (y_true - mean)
     )
 
 
