@@ -20,7 +20,7 @@ networks, proposed as an alternative to the Multi-Layer Perceptron (MLP). KANs,
 unlike MLPs, do not have learnable weights but instead possess learnable
 activation functions parameterized as univariate splines[1]. In this work, we
 change the activation functions from splines to Gaussian Processes (GP),
-allowing the KAN model to also model with uncertainty.
+allowing the KAN to also model with uncertainty of its predictions.
 
 ## Usage
 
