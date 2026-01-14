@@ -3,11 +3,17 @@ name = "gpkan"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12.8"
 dependencies = [
-    "flax>=0.12.1",
-    "gpjax>=0.13.4",
+    "gpjax==0.9.4",
+    "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",
     "numpyro>=0.19.0",
     "scienceplots>=2.2.0",
+    "scikit-learn>=1.8.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "gpkan",
 ]
