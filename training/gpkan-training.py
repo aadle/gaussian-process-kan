@@ -54,12 +54,39 @@ def loss_fn(model_params, model, X_test, y_test, n_samples=10):
 
     return neg_loglikelihood(y_test, mean, covariance)
 
-
 # TODO:
-# - [ ] Split the training loop in two:
-# - [ ] first optimizing the latent inducing points, then the kernel parameters
-# CAN BE DONE WITH DYNAMIC FREEZING
-# https://optax.readthedocs.io/en/latest/_collections/examples/freezing_parameters.html#dynamic-freezing-unfreezing-with-selective-transform
+# - [ ] Potentially split the training loop in to two stages: optimizing latent
+# parameters -> optimizing kernel parameters
+
+def training_step(
+    model,
+    model_params,
+    opt_state,
+    optimizer,
+    batch_X,
+    batch_y,
+    val_and_grad_fn,
+    mean_cov,
+):
+    loss, grads = val_and_grad_fn(
+        model_params,
+        batch_X,
+        batch_y,
+    )
+    
+    mean, covariance = mean_cov(model_params, batch_X)
+    batch_mse = mse(batch_y, mean)
+    
+    # Update parameters
+    updates, updated_opt_state = optimizer.update(grads, opt_state, model_params)
+    updated_model_params = optax.apply_updates(model_params, updates)
+    
+    model.latent_grids = updated_model_params["latent_grids"]
+    model.latent_supports = updated_model_params["latent_supports"]
+    model.kernel_parameters = updated_model_params["kernel_parameters"]
+    
+    return updated_model_params, updated_opt_state, loss, batch_mse
+
 
 def training_loop(args, model, X_train, y_train, key):
     val_and_grad_fn = jax.jit(
@@ -92,25 +119,14 @@ def training_loop(args, model, X_train, y_train, key):
         "kernel_parameters": model.kernel_parameters,
     }
 
-    freeze = optax.transforms.freeze
-    # mask = {
-    #     "latent_grids": args.freeze_x_latent,
-    #     "latent_supports": False,
-    #     "kernel_parameters": False,
-    # }
     mask = {
         "latent_grids": args.freeze_x_latent,
         "latent_supports": False,
-        "kernel_parameters": True,
+        "kernel_parameters": True, # Set to False to jointly optimize
     }
-    # If possible, use optax.transforms.selective_transform for dynamic freezing 
-    # of parameters. This circumvents the need for two separate training
-    # loops for each paramete.
-
-    optimizer = optax.transforms.selective_transform(optax.adam(1e-3), freeze_mask=mask)
-    # optimizer = optax.chain(
-    #     optax.adam(learning_rate=args.learning_rate), freeze(mask)
-    # )  
+    optimizer = optax.transforms.selective_transform(
+        optax.adam(args.learning_rate), freeze_mask=mask
+    )
     opt_state = optimizer.init(model_params)
 
     # Training loop
@@ -123,18 +139,15 @@ def training_loop(args, model, X_train, y_train, key):
         intra_epoch_loss = []
         intra_mse = []
 
-        # TODO:
-        # - [ ] Narrow down why inference part does not work? Reshape issues
-        # here, but not elsewhere when running sample_statistics??? Resolve
-        # issue in model.py
-
-        if epoch == args.epochs-10:
+        if epoch == int(args.epochs/2):
             mask = {
                 "latent_grids": args.freeze_x_latent,
                 "latent_supports": True,
                 "kernel_parameters": False,
             }
-            optimizer = optax.transforms.selective_transform(optax.adam(0.1), freeze_mask=mask)
+            optimizer = optax.transforms.selective_transform(
+                optax.adam(args.learning_rate), freeze_mask=mask
+            )
             opt_state = optimizer.init(model_params)
             print("Optimizing kernel parameters")
 
@@ -144,26 +157,39 @@ def training_loop(args, model, X_train, y_train, key):
             batch_X = X_train[i : i + args.batch_size, :]
             batch_y = y_train[i : i + args.batch_size, :]
 
-            loss, grads = val_and_grad_fn(
-                model_params,
-                batch_X,
+            model_params, opt_state, loss, batch_mse = training_step(
+                model, 
+                model_params, 
+                opt_state, 
+                optimizer,
+                batch_X, 
                 batch_y,
+                val_and_grad_fn,
+                mean_cov
             )
-            mean, covariance = mean_cov(model_params, batch_X)
-            intra_mse.append(mse(batch_y, mean))
+            # loss, grads = val_and_grad_fn(
+            #     model_params,
+            #     batch_X,
+            #     batch_y,
+            # )
+            # mean, covariance = mean_cov(model_params, batch_X)
+            # intra_mse.append(mse(batch_y, mean))
+            # intra_epoch_loss.append(loss)
+            #
+            # updates, opt_state = optimizer.update(
+            #     grads, opt_state, model_params
+            # )
+            # model_params = optax.apply_updates(model_params, updates)
+            #
+            # model.latent_grids = model_params["latent_grids"]
+            # model.latent_supports = model_params["latent_supports"]
+            # model.kernel_parameters = model_params["kernel_parameters"]
+
             intra_epoch_loss.append(loss)
-
-            updates, opt_state = optimizer.update(
-                grads, opt_state, model_params
-            )
-            model_params = optax.apply_updates(model_params, updates)
-
-            model.latent_grids = model_params["latent_grids"]
-            model.latent_supports = model_params["latent_supports"]
-            model.kernel_parameters = model_params["kernel_parameters"]
+            intra_mse.append(batch_mse)
 
         avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
-        avg_mse = sum(intra_mse) / len(intra_epoch_loss)
+        avg_mse = sum(intra_mse) / len(intra_mse)
         loss_history["avg_nll"].append(avg_nll)
         loss_history["avg_mse"].append(avg_mse)
 
@@ -236,6 +262,7 @@ def main(args):
         grid_min=jnp.min(X_train),
         grid_max=jnp.max(X_train),
         init_paramters=[1.75, 1.75], 
+        obs_stddev=1.0
     )
 
     # Training
