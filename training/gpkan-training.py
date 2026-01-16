@@ -1,19 +1,25 @@
 # TODO:
-    # Development
-    # - [ ] In addition to the loss function, add an evaluation metric
+# Development
+# - [ ] In addition to the loss function, add an evaluation metric
 
-    # Features
-    # - [ ] Enable the possibility of importing/exporting model parameters
-    # - [ ]
+# Features
+# - [ ] Enable the possibility of importing/exporting model parameters
+# - [ ]
 
 import argparse
 import jax
 import jax.numpy as jnp
+import jax.random as jr
+import optax
+import orbax.checkpoint as ocp
+import matplotlib.pyplot as plt
 from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup
+from typing import Dict
 
 jax.config.update("jax_enable_x64", True)
+
 
 def neg_loglikelihood(y_true, mean, covariance):
     diag_elements = jnp.diag(covariance)
@@ -27,80 +33,177 @@ def neg_loglikelihood(y_true, mean, covariance):
         + (y_true - mean).T @ covariance_inv @ (y_true - mean)
     )
 
+
+def mse(y_true, y_pred):
+    return jnp.mean((y_true.squeeze() - y_pred.squeeze()) ** 2)
+
+
 def loss_fn(model_params, model, X_test, y_test, n_samples=10):
-    latent_grids, latent_supports, kernel_params = model_params
+    latent_grids = model_params["latent_grids"]
+    latent_supports = model_params["latent_supports"]
+    kernel_parameters = model_params["kernel_parameters"]
+
     mean, covariance = model.sample_statistics(
-        latent_grids, 
-        latent_supports, 
-        X_test, 
-        kernel_params,
-        n_samples=n_samples
+        latent_grids,
+        latent_supports,
+        X_test,
+        kernel_parameters,
+        n_samples=n_samples,
     )
+
     return neg_loglikelihood(y_test, mean, covariance)
 
-def training_loop(args, model, X_train, y_train):
-    val_grad_loss = jax.jit(
+
+# TODO:
+# - [ ] Split the training loop in two:
+# - [ ] first optimizing the latent inducing points, then the kernel parameters
+# CAN BE DONE WITH DYNAMIC FREEZING
+# https://optax.readthedocs.io/en/latest/_collections/examples/freezing_parameters.html#dynamic-freezing-unfreezing-with-selective-transform
+
+def training_loop(args, model, X_train, y_train, key):
+    val_and_grad_fn = jax.jit(
         jax.value_and_grad(
-            lambda Xs_latent, ys_latent, kernel_params, X_test, y_test:
-            neg_loglikelihood(
-                y_test,
-                *model.sample_statistics(
-                    Xs_latent, 
-                    ys_latent, 
-                    X_test, 
-                    kernel_params, 
-                    n_samples=10
-                )
+            lambda params, X, y: loss_fn(
+                params,
+                model,
+                X,
+                y,
+                n_samples=model.n_grid_points,
             ),
-            argnums=(0, 1, 2)
+            argnums=0,
         )
     )
 
-    model_params = (
-        model.latent_grids,
-        model.latent_supports,
-        model.kernel_parameters
+    mean_cov = jax.jit(lambda params, X:
+        model.sample_statistics(
+                params["latent_grids"],
+                params["latent_supports"],
+                X,
+                params["kernel_parameters"],
+                n_samples=args.n_samples,
+            )
     )
 
-    loss_history = []
+    # Optimizer
+    model_params = {
+        "latent_grids": model.latent_grids,
+        "latent_supports": model.latent_supports,
+        "kernel_parameters": model.kernel_parameters,
+    }
+
+    freeze = optax.transforms.freeze
+    mask = {
+        "latent_grids": args.freeze_x_latent,
+        "latent_supports": False,
+        "kernel_parameters": False,
+    }
+    # If possible, use optax.transforms.selective_transform for dynamic freezing 
+    # of parameters. This will circumvent the need for two separate training
+    # loops for each parameter, but also opens up for cool possibilities.
+    optimizer = optax.chain(
+        optax.adam(learning_rate=args.learning_rate), freeze(mask)
+    )  
+    opt_state = optimizer.init(model_params)
+
+    # Training loop
+    loss_history = {
+        "avg_nll": [],
+        "avg_mse": [],
+    }
+
     for epoch in range(args.epochs):
         intra_epoch_loss = []
+        intra_mse = []
+
+        # TODO:
+        # - [ ] Narrow down why inference part does not work? Reshape issues
+        # here, but not elsewhere when running sample_statistics??? Resolve
+        # issue in model.py
 
         for i in range(0, X_train.shape[0], args.batch_size):
-            batch_X = X_train[i:i+args.batch_size, :]
-            batch_y = y_train[i:i+args.batch_size, :]
+            key, subkey = jr.split(key)
+            batch_X = X_train[i : i + args.batch_size, :]
+            batch_y = y_train[i : i + args.batch_size, :]
 
-            loss, (grad_grids, grad_supports, grad_params) = val_grad_loss(
-                model.latent_grids, 
-                model.latent_supports,
-                model.kernel_parameters,
-                batch_X, batch_y
-                )
+            loss, grads = val_and_grad_fn(
+                model_params,
+                batch_X,
+                batch_y,
+            )
+            mean, covariance = mean_cov(model_params, batch_X)
+            intra_mse.append(mse(batch_y, mean))
             intra_epoch_loss.append(loss)
 
-            model.latent_supports = jax.tree.map(
-                lambda latent_supports, grad_supports_: 
-                latent_supports - grad_supports_ * args.learning_rate,
-                model.latent_supports,
-                grad_supports
+            updates, opt_state = optimizer.update(
+                grads, opt_state, model_params
+            )
+            model_params = optax.apply_updates(model_params, updates)
+
+            model.latent_grids = model_params["latent_grids"]
+            model.latent_supports = model_params["latent_supports"]
+            model.kernel_parameters = model_params["kernel_parameters"]
+
+        avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
+        avg_mse = sum(intra_mse) / len(intra_epoch_loss)
+        loss_history["avg_nll"].append(avg_nll)
+        loss_history["avg_mse"].append(avg_mse)
+
+        if epoch % 10 == 0 or epoch == 0:
+            print(
+                f"Epoch {epoch}: Avg. NLL: {avg_nll:.6f}, Avg. MSE: {avg_mse:.6f}, LR: {args.learning_rate:.6f}"
             )
 
-        avg_loss = sum(intra_epoch_loss) / len(intra_epoch_loss)
+    plt.figure()
+    plt.plot(loss_history["avg_nll"])
 
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}: Avg. loss: {avg_loss:.6f}, LR: {args.learning_rate:.6f}")
-        loss_history.append(avg_loss)
+def save_parameters(model_params:Dict, path):
+    path = ocp.test_utils.erase_and_create_empty(path)
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(path, model_params)
 
-def main(args, model: GPKAN):
+def restore_parameters(path):
+    checkpointer = ocp.StandardCheckpointer()
+    model_params = checkpointer.restore(path)
+    return model_params
+
+
+def main(args):
+    model_name = ','.join(str(x) for x in args.model_size)
+
+    # Data initialization
     X, y = data_setup(args)
     X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=args.test_size, 
-        random_state=321
+        X, y, test_size=args.test_size, random_state=args.key
     )
-    y_train_std = (y_train - jnp.mean(y_train) ) / jnp.std(y_train)
-    training_loop(args, model, X_train, y_train_std)
+    y_train_std = (y_train - jnp.mean(y_train)) / jnp.std(y_train)
+
+    # Model initialization
+    model = GPKAN(
+        layers=args.model_size,
+        n_grid_points=args.n_inducing,
+        seed=args.key,
+        grid_min=jnp.min(X_train),
+        grid_max=jnp.max(X_train),
+    )
+
+    # Training
+    key = jr.PRNGKey(args.key)
+    training_loop(args, model, X_train, y_train_std, key)
+
+    model_params = {
+        "latent_grids": model.latent_grids,
+        "latent_supports": model.latent_supports,
+        "kernel_parameters": model.kernel_parameters,
+    }
+
+    # Test
+    y_test_std = (y - jnp.mean(y_train)) / jnp.std(y_train)
+    print(loss_fn(model_params, model, X, y_test_std))
+
+    # Plot the results...
+
+    # Save the parameters of the finally trained model...
+
 
 
 if __name__ == "__main__":
@@ -108,31 +211,41 @@ if __name__ == "__main__":
         description="Gaussian Process Kolmogorov Arnold Network training"
     )
 
+    # General arguments
+    parser.add_argument("--key", nargs="?", default=123, type=int)
+
     # Model arguments
-    parser.add_argument("--model_size", nargs="?", default=[2, 5, 1], type=list)
-    # Does not work properly
+    parser.add_argument("--model_size", nargs="+", default=[2, 5, 1], type=int)  
+    parser.add_argument("--n_inducing", nargs="?", default=10, type=int)
+    parser.add_argument(
+        "--freeze_x_latent",
+        nargs="?",
+        choices=[True, False],
+        default=True,
+        type=bool,
+    )
 
     # Data setup arguments
     parser.add_argument(
-        "--function", 
-        nargs="?", 
+        "--function",
+        nargs="?",
         choices=[
-        "himmelblau", 
-        "goldstein", 
-        "trig", 
-        "trollveggen" # not implemented yet
-        "grandcanyon" # not implemented yet
+            "himmelblau",
+            "goldstein",
+            "trig",
+            "trollveggen"  # not implemented yet
+            "grandcanyon",  # not implemented yet
         ],
-        default="himmelblau"
+        default="himmelblau",
     )
-    parser.add_argument("--num_samples", nargs="?", default=20, type=int)
+    parser.add_argument("--n_samples", nargs="?", default=20, type=int)
 
     # Training loop arguments
-    parser.add_argument("--epochs", nargs="?", default=500, type=int)
-    parser.add_argument("--learning_rate", nargs="?", default=0.01, type=float)
+    parser.add_argument("--epochs", nargs="?", default=200, type=int)
+    parser.add_argument("--learning_rate", nargs="?", default=1e-3, type=float)
     parser.add_argument("--batch_size", nargs="?", default=32, type=float)
     parser.add_argument("--test_size", nargs="?", default=0.2, type=float)
 
     args = parser.parse_args()
-    model = GPKAN()
-    main(args, model)
+
+    main(args)

@@ -1,12 +1,9 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import matplotlib.pyplot as plt
-import numpy as np
-import scienceplots
+# import scienceplots
 from jaxtyping import install_import_hook
 from flax import nnx
-from textwrap import wrap
 
 with install_import_hook("gpjax", "beartype.beartype"):
     import gpjax as gpx
@@ -18,7 +15,7 @@ from gpjax.parameters import (
 )
 
 # ---- Setup ----
-plt.style.use(["science", "grid"])
+# plt.style.use(["science", "grid"])
 jax.config.update("jax_enable_x64", True)
 
 
@@ -219,6 +216,9 @@ class GPKAN:
 
         return act
 
+    # TODO: 
+    # – [ ] Does not work properly if you pass in a jax.random.key? Key
+    # splitting doesn't happen properly.
     def sample_statistics(
         self,
         Xs_latent,
@@ -242,119 +242,117 @@ class GPKAN:
             samples = samples[:, None]
 
         mu = jnp.mean(samples, axis=0)
-        # print(mu.shape)
-        sigma = jnp.var(samples, axis=0) * jnp.eye(mu.shape[0])
-        # sigma = jnp.cov(samples, rowvar=False) # covariance
-        return mu, sigma
+        sigma2 = jnp.var(samples, axis=0) * jnp.eye(mu.shape[0])
+        return mu, sigma2
 
-    def plot_neurons(
-        self,
-        save_fig=False,
-        save_path="figs/test_fig",
-    ):
-        for layer_idx, (nin, nout) in enumerate(
-            zip(self.layers[:-1], self.layers[1:])
-        ):
-            subplot_size = 3
-            min_width = 14
-
-            # Determine figure size
-            if nout == 1:
-                figsize = (min_width, nin * subplot_size)
-            elif nin == 1:
-                figsize = (nout * subplot_size, subplot_size)
-            else:
-                figsize = (nout * subplot_size, nin * subplot_size)
-
-            # Create subplots
-            if nout == 1:
-                fig, axs = plt.subplots(nrows=nin, ncols=1, figsize=figsize)
-                axs = np.array(axs).reshape(nin, 1)
-            else:
-                fig, axs = plt.subplots(nrows=nin, ncols=nout, figsize=figsize)
-                axs = np.array(axs).reshape(nin, nout)
-
-            for nin_idx in range(nin):
-                for nout_idx in range(nout):
-                    ax = axs[nin_idx, nout_idx]
-
-                    X_latent = self.latent_grids[layer_idx][nin_idx][nout_idx]
-                    y_latent = self.latent_supports[layer_idx][nin_idx][
-                        nout_idx
-                    ]
-                    x_min, x_max = jnp.min(X_latent), jnp.max(X_latent)
-                    x_range = x_max - x_min
-                    X = jnp.linspace(
-                        x_min - 0.1 * x_range, x_max + 0.1 * x_range, 100
-                    ).reshape(-1, 1)
-
-                    kernel_parameter = self.kernel_parameters[layer_idx][
-                        nin_idx
-                    ][nout_idx]
-                    length_scale = kernel_parameter["prior"]["kernel"][
-                        "lengthscale"
-                    ].value
-                    signal_variance = kernel_parameter["prior"]["kernel"][
-                        "variance"
-                    ].value
-                    noise_obs_stddev = kernel_parameter["likelihood"][
-                        "obs_stddev"
-                    ].value
-
-                    posterior = self.predictive_posterior(
-                        X_latent, y_latent, X, kernel_parameter
-                    )
-                    posterior_mean = posterior.mean()
-                    posterior_stddev = posterior.stddev()
-
-                    ax.set_title(
-                        "\n".join(
-                            wrap(
-                                f"$l$: {length_scale:.2f}, $\sigma_f^2$: {signal_variance:.2f}, $\sigma_n$: {noise_obs_stddev:.2f}"
-                            )
-                        ),
-                        fontsize=12,
-                    )
-
-                    ax.plot(
-                        X,
-                        posterior_mean,
-                        linestyle="--",
-                        linewidth=0.7,
-                        color="black",
-                    )
-                    ax.scatter(X_latent, y_latent, s=30, color="tab:orange")
-                    ax.fill_between(
-                        X.flatten(),
-                        posterior_mean + 2 * posterior_stddev,
-                        posterior_mean - 2 * posterior_stddev,
-                        alpha=0.15,
-                        color="tab:blue",
-                    )
-
-                    ax.set_xlabel("h", fontsize=10)
-                    ax.set_ylabel("z", fontsize=10)
-                    ax.set_box_aspect(1)
-
-                    # Add Input dimension labels
-                    if nout == 1 or nout_idx == nout - 1:
-                        ax2 = ax.twinx()
-                        ax2.set_ylabel(
-                            f"Input dimension {nin_idx + 1}", fontsize=12
-                        )
-                        ax2.set_yticks([])
-                        ax2.set_box_aspect(1)
-
-            fig.suptitle(f"Layer {layer_idx + 1}", fontsize=25)
-
-            if nout == 1:
-                # Manual spacing for vertical column
-                fig.subplots_adjust(top=0.90, hspace=0.6)
-            else:
-                plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-            if save_fig:
-                plt.savefig(save_path + f"layer_{layer_idx + 1}.png", dpi=500)
+    # def plot_neurons(
+    #     self,
+    #     save_fig=False,
+    #     save_path="figs/test_fig",
+    # ):
+    #     for layer_idx, (nin, nout) in enumerate(
+    #         zip(self.layers[:-1], self.layers[1:])
+    #     ):
+    #         subplot_size = 3
+    #         min_width = 14
+    #
+    #         # Determine figure size
+    #         if nout == 1:
+    #             figsize = (min_width, nin * subplot_size)
+    #         elif nin == 1:
+    #             figsize = (nout * subplot_size, subplot_size)
+    #         else:
+    #             figsize = (nout * subplot_size, nin * subplot_size)
+    #
+    #         # Create subplots
+    #         if nout == 1:
+    #             fig, axs = plt.subplots(nrows=nin, ncols=1, figsize=figsize)
+    #             axs = np.array(axs).reshape(nin, 1)
+    #         else:
+    #             fig, axs = plt.subplots(nrows=nin, ncols=nout, figsize=figsize)
+    #             axs = np.array(axs).reshape(nin, nout)
+    #
+    #         for nin_idx in range(nin):
+    #             for nout_idx in range(nout):
+    #                 ax = axs[nin_idx, nout_idx]
+    #
+    #                 X_latent = self.latent_grids[layer_idx][nin_idx][nout_idx]
+    #                 y_latent = self.latent_supports[layer_idx][nin_idx][
+    #                     nout_idx
+    #                 ]
+    #                 x_min, x_max = jnp.min(X_latent), jnp.max(X_latent)
+    #                 x_range = x_max - x_min
+    #                 X = jnp.linspace(
+    #                     x_min - 0.1 * x_range, x_max + 0.1 * x_range, 100
+    #                 ).reshape(-1, 1)
+    #
+    #                 kernel_parameter = self.kernel_parameters[layer_idx][
+    #                     nin_idx
+    #                 ][nout_idx]
+    #                 length_scale = kernel_parameter["prior"]["kernel"][
+    #                     "lengthscale"
+    #                 ].value
+    #                 signal_variance = kernel_parameter["prior"]["kernel"][
+    #                     "variance"
+    #                 ].value
+    #                 noise_obs_stddev = kernel_parameter["likelihood"][
+    #                     "obs_stddev"
+    #                 ].value
+    #
+    #                 posterior = self.predictive_posterior(
+    #                     X_latent, y_latent, X, kernel_parameter
+    #                 )
+    #                 posterior_mean = posterior.mean()
+    #                 posterior_stddev = posterior.stddev()
+    #
+    #                 ax.set_title(
+    #                     "\n".join(
+    #                         wrap(
+    #                             f"$l$: {length_scale:.2f}, $\sigma_f^2$: {signal_variance:.2f}, $\sigma_n$: {noise_obs_stddev:.2f}"
+    #                         )
+    #                     ),
+    #                     fontsize=12,
+    #                 )
+    #
+    #                 ax.plot(
+    #                     X,
+    #                     posterior_mean,
+    #                     linestyle="--",
+    #                     linewidth=0.7,
+    #                     color="black",
+    #                 )
+    #                 ax.scatter(X_latent, y_latent, s=30, color="tab:orange")
+    #                 ax.fill_between(
+    #                     X.flatten(),
+    #                     posterior_mean + 2 * posterior_stddev,
+    #                     posterior_mean - 2 * posterior_stddev,
+    #                     alpha=0.15,
+    #                     color="tab:blue",
+    #                 )
+    #
+    #                 ax.set_xlabel("h", fontsize=10)
+    #                 ax.set_ylabel("z", fontsize=10)
+    #                 ax.set_box_aspect(1)
+    #
+    #                 # Add Input dimension labels
+    #                 if nout == 1 or nout_idx == nout - 1:
+    #                     ax2 = ax.twinx()
+    #                     ax2.set_ylabel(
+    #                         f"Input dimension {nin_idx + 1}", fontsize=12
+    #                     )
+    #                     ax2.set_yticks([])
+    #                     ax2.set_box_aspect(1)
+    #
+    #         fig.suptitle(f"Layer {layer_idx + 1}", fontsize=25)
+    #
+    #         if nout == 1:
+    #             # Manual spacing for vertical column
+    #             fig.subplots_adjust(top=0.90, hspace=0.6)
+    #         else:
+    #             plt.tight_layout(rect=[0, 0, 1, 0.95])
+    #
+    #         if save_fig:
+    #             plt.savefig(save_path + f"layer_{layer_idx + 1}.png", dpi=500)
 
 
 if __name__ == "__main__":
@@ -365,8 +363,8 @@ if __name__ == "__main__":
         grid_max=5,
         parameter_transform=True,
     )
-    model.plot_neurons(save_fig=True)
-    plt.show()
+    # model.plot_neurons(save_fig=True)
+    # plt.show()
 
     # f = lambda x, y: jnp.sin(x) ** 10 + jnp.cos(10 + y * x) * jnp.cos(x)
 
