@@ -34,4 +34,4 @@ def data_setup(args) -> [jax.Array | None, jax.Array | None]:
 
         case "grandcanyon":
             pass
-    return X, y
+    return x1, x2, X, y

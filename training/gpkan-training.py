@@ -17,6 +17,7 @@ from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup
 from typing import Dict
+from plotting import plot_2d_predictions
 
 jax.config.update("jax_enable_x64", True)
 
@@ -92,17 +93,24 @@ def training_loop(args, model, X_train, y_train, key):
     }
 
     freeze = optax.transforms.freeze
+    # mask = {
+    #     "latent_grids": args.freeze_x_latent,
+    #     "latent_supports": False,
+    #     "kernel_parameters": False,
+    # }
     mask = {
         "latent_grids": args.freeze_x_latent,
         "latent_supports": False,
-        "kernel_parameters": False,
+        "kernel_parameters": True,
     }
     # If possible, use optax.transforms.selective_transform for dynamic freezing 
-    # of parameters. This will circumvent the need for two separate training
-    # loops for each parameter, but also opens up for cool possibilities.
-    optimizer = optax.chain(
-        optax.adam(learning_rate=args.learning_rate), freeze(mask)
-    )  
+    # of parameters. This circumvents the need for two separate training
+    # loops for each paramete.
+
+    optimizer = optax.transforms.selective_transform(optax.adam(1e-3), freeze_mask=mask)
+    # optimizer = optax.chain(
+    #     optax.adam(learning_rate=args.learning_rate), freeze(mask)
+    # )  
     opt_state = optimizer.init(model_params)
 
     # Training loop
@@ -120,6 +128,17 @@ def training_loop(args, model, X_train, y_train, key):
         # here, but not elsewhere when running sample_statistics??? Resolve
         # issue in model.py
 
+        if epoch == args.epochs-10:
+            mask = {
+                "latent_grids": args.freeze_x_latent,
+                "latent_supports": True,
+                "kernel_parameters": False,
+            }
+            optimizer = optax.transforms.selective_transform(optax.adam(0.1), freeze_mask=mask)
+            opt_state = optimizer.init(model_params)
+            print("Optimizing kernel parameters")
+
+        # TODO:
         for i in range(0, X_train.shape[0], args.batch_size):
             key, subkey = jr.split(key)
             batch_X = X_train[i : i + args.batch_size, :]
@@ -156,6 +175,31 @@ def training_loop(args, model, X_train, y_train, key):
     plt.figure()
     plt.plot(loss_history["avg_nll"])
 
+def prediction(args, model, model_params, X):
+    batch_size = args.batch_size
+    mu_batches = []
+    sigma2_batches = []
+
+    for batch_idx, i in enumerate(range(0, X.shape[0], batch_size)):
+        batch_X = X[i:i+batch_size]
+        mu_batch, sigma2_batch = model.sample_statistics(
+            model_params["latent_grids"], 
+            model_params["latent_supports"], 
+            batch_X, 
+            model_params["kernel_parameters"], 
+            args.n_samples, 
+            key=jr.key(233 + i)
+        )
+        mu_batches.append(mu_batch)
+        sigma2_batches.append(sigma2_batch)
+
+    mu_full = jnp.concatenate(mu_batches)
+    cov_full = jax.scipy.linalg.block_diag(*sigma2_batches)
+    y_stddev = jnp.sqrt(jnp.diag(cov_full))
+
+    return mu_full, y_stddev 
+    
+
 def save_parameters(model_params:Dict, path):
     path = ocp.test_utils.erase_and_create_empty(path)
     checkpointer = ocp.StandardCheckpointer()
@@ -167,15 +211,22 @@ def restore_parameters(path):
     return model_params
 
 
+# TODO: 
+# - [ ] Clean up the code.
+# - [ ] Add optional to plot the uncertainty without standardizing it to the
+# mean. See how that looks like.
+# - [ ] Create utility file.
+# - [ ]
 def main(args):
     model_name = ','.join(str(x) for x in args.model_size)
 
     # Data initialization
-    X, y = data_setup(args)
+    x1, x2, X, y = data_setup(args)
+    y = jnp.sqrt(y)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
-    y_train_std = (y_train - jnp.mean(y_train)) / jnp.std(y_train)
+    # y_train_std = (y_train - jnp.mean(y_train)) / jnp.std(y_train)
 
     # Model initialization
     model = GPKAN(
@@ -184,11 +235,12 @@ def main(args):
         seed=args.key,
         grid_min=jnp.min(X_train),
         grid_max=jnp.max(X_train),
+        init_paramters=[1.75, 1.75], 
     )
 
     # Training
     key = jr.PRNGKey(args.key)
-    training_loop(args, model, X_train, y_train_std, key)
+    training_loop(args, model, X_train, y_train, key)
 
     model_params = {
         "latent_grids": model.latent_grids,
@@ -198,9 +250,27 @@ def main(args):
 
     # Test
     y_test_std = (y - jnp.mean(y_train)) / jnp.std(y_train)
-    print(loss_fn(model_params, model, X, y_test_std))
+    # print(loss_fn(model_params, model, X, y_test_std))
+
+    # Do predictions on the entire dataset
+    print()
+    print(20*"=", "Prediction", 20*"=")
+    mu, sigma = prediction(args, model, model_params, X)
+    # residuals = y_test_std.flatten() - mu.flatten()
+    residuals = y.flatten() - mu.flatten()
+
 
     # Plot the results...
+    fig, ax = plot_2d_predictions(
+        x1,
+        x2,
+        # y_test_std,
+        y,
+        mu,
+        residuals,
+        sigma,
+    )
+    plt.show()
 
     # Save the parameters of the finally trained model...
 
