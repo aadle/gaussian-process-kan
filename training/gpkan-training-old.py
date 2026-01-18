@@ -13,7 +13,6 @@ import jax.random as jr
 import optax
 import orbax.checkpoint as ocp
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup
@@ -23,8 +22,8 @@ from plotting import plot_2d_predictions, plot_2d_results
 jax.config.update("jax_enable_x64", True)
 
 
-def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
-    diag_elements = jnp.diag(covariance) + jitter
+def neg_loglikelihood(y_true, mean, covariance):
+    diag_elements = jnp.diag(covariance)
     covariance_inv = jnp.diag(1.0 / diag_elements)
     log_det = jnp.sum(jnp.log(diag_elements))
     y_true = y_true.flatten()
@@ -55,39 +54,12 @@ def loss_fn(model_params, model, X_test, y_test, n_samples=10):
 
     return neg_loglikelihood(y_test, mean, covariance)
 
-def training_step(
-    model,
-    model_params,
-    opt_state,
-    optimizer,
-    batch_X,
-    batch_y,
-    val_and_grad_fn,
-    mean_cov,
-):
-    loss, grads = val_and_grad_fn(
-        model_params,
-        batch_X,
-        batch_y,
-    )
-    
-    if loss < 0 or jnp.isnan(loss) or jnp.isinf(loss):
-        mean, covariance = mean_cov(model_params, batch_X)
-        batch_mse = mse(batch_y, mean)
-        return model_params, opt_state, loss, batch_mse
 
-    mean, covariance = mean_cov(model_params, batch_X)
-    batch_mse = mse(batch_y, mean)
-    
-    updates, updated_opt_state = optimizer.update(grads, opt_state, model_params)
-    updated_model_params = optax.apply_updates(model_params, updates)
-
-    model.latent_grids = updated_model_params["latent_grids"]
-    model.latent_supports = updated_model_params["latent_supports"]
-    model.kernel_parameters = updated_model_params["kernel_parameters"]
-       
-    return updated_model_params, updated_opt_state, loss, batch_mse
-
+# TODO:
+# - [ ] Split the training loop in two:
+# - [ ] first optimizing the latent inducing points, then the kernel parameters
+# CAN BE DONE WITH DYNAMIC FREEZING
+# https://optax.readthedocs.io/en/latest/_collections/examples/freezing_parameters.html#dynamic-freezing-unfreezing-with-selective-transform
 
 def training_loop(args, model, X_train, y_train, key):
     val_and_grad_fn = jax.jit(
@@ -120,14 +92,25 @@ def training_loop(args, model, X_train, y_train, key):
         "kernel_parameters": model.kernel_parameters,
     }
 
+    freeze = optax.transforms.freeze
+    # mask = {
+    #     "latent_grids": args.freeze_x_latent,
+    #     "latent_supports": False,
+    #     "kernel_parameters": False,
+    # }
     mask = {
         "latent_grids": args.freeze_x_latent,
         "latent_supports": False,
-        "kernel_parameters": True, # Set to False to jointly optimize
+        "kernel_parameters": True,
     }
-    optimizer = optax.transforms.selective_transform(
-        optax.adam(args.learning_rate), freeze_mask=mask
-    )
+    # If possible, use optax.transforms.selective_transform for dynamic freezing 
+    # of parameters. This circumvents the need for two separate training
+    # loops for each paramete.
+
+    optimizer = optax.transforms.selective_transform(optax.adam(args.learning_rate), freeze_mask=mask)
+    # optimizer = optax.chain(
+    #     optax.adam(learning_rate=args.learning_rate), freeze(mask)
+    # )  
     opt_state = optimizer.init(model_params)
 
     # Training loop
@@ -140,68 +123,71 @@ def training_loop(args, model, X_train, y_train, key):
         intra_epoch_loss = []
         intra_mse = []
 
-        # Switch optimizing latent support to kernel parameters
-        if epoch == int(args.epochs/2 - 1):
+        # TODO:
+        # - [ ] Narrow down why inference part does not work? Reshape issues
+        # here, but not elsewhere when running sample_statistics??? Resolve
+        # issue in model.py
+
+        if epoch == int(args.epochs/2-1):
             mask = {
                 "latent_grids": args.freeze_x_latent,
                 "latent_supports": True,
                 "kernel_parameters": False,
-
             }
-            optimizer_chain = optax.chain(
-                optax.adam(args.learning_rate),
-                optax.keep_params_nonnegative() # naive solution given that mean of the kernels can be negative... works for now
-            )
-            optimizer = optax.transforms.selective_transform(
-                optimizer_chain, freeze_mask=mask
-            )
+            optimizer = optax.transforms.selective_transform(optax.adam(args.learning_rate), freeze_mask=mask)
             opt_state = optimizer.init(model_params)
             print("Optimizing kernel parameters")
 
+        # TODO:
         for i in range(0, X_train.shape[0], args.batch_size):
             key, subkey = jr.split(key)
-            batch_X = X_train[i: i+args.batch_size, :]
-            batch_y = y_train[i: i+args.batch_size, :]
+            batch_X = X_train[i : i + args.batch_size, :]
+            batch_y = y_train[i : i + args.batch_size, :]
 
-            model_params, opt_state, loss, batch_mse = training_step(
-                model, 
-                model_params, 
-                opt_state, 
-                optimizer,
-                batch_X, 
+            loss, grads = val_and_grad_fn(
+                model_params,
+                batch_X,
                 batch_y,
-                val_and_grad_fn,
-                mean_cov
             )
+            mean, covariance = mean_cov(model_params, batch_X)
+            intra_mse.append(mse(batch_y, mean))
+            intra_epoch_loss.append(loss)
 
-            if not jnp.isnan(loss):
-                intra_epoch_loss.append(loss)
-                intra_mse.append(batch_mse)
+            updates, opt_state = optimizer.update(
+                grads, opt_state, model_params
+            )
+            model_params = optax.apply_updates(model_params, updates)
 
-        if len(intra_epoch_loss) > 0:
-            avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
-            avg_mse = sum(intra_mse) / len(intra_mse)
-            loss_history["avg_nll"].append(avg_nll)
-            loss_history["avg_mse"].append(avg_mse)
+            model.latent_grids = model_params["latent_grids"]
+            model.latent_supports = model_params["latent_supports"]
+            model.kernel_parameters = model_params["kernel_parameters"]
+
+        avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
+        avg_mse = sum(intra_mse) / len(intra_epoch_loss)
+        loss_history["avg_nll"].append(avg_nll)
+        loss_history["avg_mse"].append(avg_mse)
 
         if epoch % 10 == 0 or epoch == 0:
             print(
-                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}, LR: {args.learning_rate:.4f}"
+                f"Epoch {epoch}: Avg. NLL: {avg_nll:.6f}, Avg. MSE: {avg_mse:.6f}, LR: {args.learning_rate:.6f}"
             )
+
+    plt.figure()
+    plt.plot(loss_history["avg_nll"])
 
 def prediction(args, model, model_params, X):
     batch_size = args.batch_size
     mu_batches = []
     sigma2_batches = []
 
-    for i in tqdm(range(0, X.shape[0], batch_size)):
+    for batch_idx, i in enumerate(range(0, X.shape[0], batch_size)):
         batch_X = X[i:i+batch_size]
         mu_batch, sigma2_batch = model.sample_statistics(
             model_params["latent_grids"], 
             model_params["latent_supports"], 
             batch_X, 
             model_params["kernel_parameters"], 
-            20, 
+            args.n_samples, 
             key=jr.key(233 + i)
         )
         mu_batches.append(mu_batch)
@@ -236,23 +222,11 @@ def main(args):
 
     # Data initialization
     x1, x2, X, y = data_setup(args)
-
-    match args.function:
-        case "himmelblau":
-            y = jnp.sqrt(y) # like in original implementation (himmelblau)
-        case "goldstein":
-            y = jnp.log(y)
-        case _:
-            y = jnp.sqrt(y)
-
+    y = jnp.sqrt(y)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
-
-    # STD
-    # y_train_stddev = jnp.sqrt(jnp.var(y_train))
-    # y_train_mean = jnp.mean(y_train)
-    # y_train_std = (y_train - y_train_mean ) / y_train_stddev
+    # y_train_std = (y_train - jnp.mean(y_train)) / jnp.std(y_train)
 
     # Model initialization
     model = GPKAN(
@@ -266,7 +240,6 @@ def main(args):
 
     # Training
     key = jr.PRNGKey(args.key)
-    # training_loop(args, model, X_train, y_train_std, key)
     training_loop(args, model, X_train, y_train, key)
 
     model_params = {
@@ -276,19 +249,16 @@ def main(args):
     }
 
     # Test
-    # y_test_std = (y - y_train_mean) / y_train_std
+    y_test_std = (y - jnp.mean(y_train)) / jnp.std(y_train)
     # print(loss_fn(model_params, model, X, y_test_std))
 
     # Do predictions on the entire dataset
     print()
     print(20*"=", "Prediction", 20*"=")
     mu, sigma = prediction(args, model, model_params, X)
-
-    # STD: Scale back predictions and uncertainty
-    # mu = mu * y_train_stddev + y_train_mean # scale back
-    # sigma = sigma * y_train_stddev + y_train_mean # scale back
-
+    # residuals = y_test_std.flatten() - mu.flatten()
     residuals = y.flatten() - mu.flatten()
+
 
     # Plot the results...
     fig, ax = plot_2d_predictions(
@@ -299,7 +269,6 @@ def main(args):
         residuals,
         sigma,
     )
-    plt.show()
 
     fig, ax = plot_2d_results(
         x1,
@@ -310,9 +279,8 @@ def main(args):
     )
     plt.show()
 
-    print(model_params["kernel_parameters"])
-
     # Save the parameters of the finally trained model...
+
 
 
 if __name__ == "__main__":
@@ -352,7 +320,7 @@ if __name__ == "__main__":
     # Training loop arguments
     parser.add_argument("--epochs", nargs="?", default=200, type=int)
     parser.add_argument("--learning_rate", nargs="?", default=1e-3, type=float)
-    parser.add_argument("--batch_size", nargs="?", default=32, type=int)
+    parser.add_argument("--batch_size", nargs="?", default=32, type=float)
     parser.add_argument("--test_size", nargs="?", default=0.2, type=float)
 
     args = parser.parse_args()

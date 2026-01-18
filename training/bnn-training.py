@@ -40,7 +40,7 @@ def model(X, Y, D_H, D_Y=1):
     # sample final layer of weights and neural network output
     w3 = numpyro.sample("w3", dist.Normal(jnp.zeros((D_H, D_Y)), jnp.ones((D_H, D_Y))))
     assert w3.shape == (D_H, D_Y)
-    z3 = jnp.matmul(z2, w3)  # <= output of the neural network
+    z3 = jnp.matmul(z2, w3)
     assert z3.shape == (N, D_Y)
 
     if Y is not None:
@@ -104,12 +104,15 @@ def get_data(N=50, D_X=3, sigma_obs=0.05, N_test=500):
 
 
 def main(args):
-    N, D_X, D_H = args.num_data, 3, args.num_hidden
+    N, D_X, D_H = args.num_data, 2, args.num_hidden
     X, Y, X_test = get_data(N=N, D_X=D_X)
+
+    print(X.shape, Y.shape, X_test.shape)
+    return 0
 
     # do inference
     rng_key, rng_key_predict = random.split(random.PRNGKey(0))
-    samples = run_inference(model, args, rng_key, X, Y, D_H) # Returns a collection of model weigths
+    samples = run_inference(model, args, rng_key, X, Y, D_H) # Returns a collection of model weights
 
     # predict Y_test at inputs X_test, using weights from `samples`.
     vmap_args = (
@@ -142,13 +145,12 @@ def main(args):
 
 
 if __name__ == "__main__":
-    assert numpyro.__version__.startswith("0.15.0")
     parser = argparse.ArgumentParser(description="Bayesian neural network example")
     parser.add_argument("-n", "--num-samples", nargs="?", default=2000, type=int)
     parser.add_argument("--num-warmup", nargs="?", default=1000, type=int)
     parser.add_argument("--num-chains", nargs="?", default=1, type=int)
     parser.add_argument("--num-data", nargs="?", default=100, type=int)
-    parser.add_argument("--num-hidden", nargs="?", default=5, type=int)
+    parser.add_argument("--num-hidden", nargs="?", default=16, type=int)
     parser.add_argument("--device", default="cpu", type=str, help='use "cpu" or "gpu".')
     args = parser.parse_args()
 

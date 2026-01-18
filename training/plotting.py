@@ -1,6 +1,120 @@
 import matplotlib.pyplot as plt
 from matplotlib.cm import ScalarMappable
 import numpy as np
+import jax.numpy as jnp
+
+
+def plot_2d_results(
+    x1,
+    x2,
+    y,
+    mu_hat,
+    sigma_hat,
+    title="Results",
+    figsize=(8, 8),
+    cmap1="viridis",
+    cmap2="jet",
+    dpi=100,
+):
+    # Ensuring data is in plottable format
+    x1 = x1.squeeze()
+    x2 = x2.squeeze()
+    y = y.squeeze()
+    mu_hat = mu_hat.squeeze()
+    
+    # Plotting arguments
+    levels = 40
+
+
+    fig, axs = plt.subplots(
+        2, 2, figsize=figsize, constrained_layout=True, dpi=dpi
+    )
+    axs = axs.flatten()
+
+
+    # Top row configuration, shared color bar
+    top_row_cbar_min = min(y.min(), mu_hat.min())
+    top_row_cbar_max = max(y.max(), mu_hat.max())
+    top_row_norm = plt.Normalize(top_row_cbar_min, top_row_cbar_max)
+
+    # Plot 1: Actual data
+    actual_data = axs[0].contourf(
+        x1,
+        x2,
+        y.reshape(x2.shape[0], x1.shape[0]),
+        levels=levels,
+        cmap=cmap1,
+        vmin=top_row_cbar_min,
+        vmax=top_row_cbar_max,
+    )
+
+    axs[0].set_title("Underlying data")
+    axs[0].set_xlabel("$x_1$")
+    axs[0].set_ylabel("$x_2$")
+    # fig.colorbar(actual_data, ax=axs[0])
+
+    # Plot 2: Predicted mean
+    pred_mean = axs[1].contourf(
+        x1,
+        x2,
+        mu_hat.reshape(x2.shape[0], x1.shape[0]),
+        levels=levels,
+        cmap=cmap1,
+        vmin=top_row_cbar_min,
+        vmax=top_row_cbar_max,
+    )
+    axs[1].set_title("Sampled Mean Function")
+    axs[1].set_xlabel("$x_1$")
+    axs[1].set_ylabel("$x_2$")
+    # fig.colorbar(pred_mean, ax=axs[1])
+
+    # Colorbar for top row
+    sm1 = ScalarMappable(cmap=cmap1, norm=top_row_norm)
+    sm1.set_array([])
+    cbar_row1 = fig.colorbar(
+        sm1, ax=[axs[0], axs[1]], location="right", shrink=0.98
+    )
+    cbar_row1.set_label("Function value f(x)")
+
+
+    # ======================== Bottom row ========================
+
+    # Plot 3
+    residuals = jnp.abs(y - mu_hat)
+
+    res_plot = axs[2].contourf(
+        x1,
+        x2,
+        residuals.reshape(x2.shape[0], x1.shape[0]),
+        cmap=cmap2,
+        levels=levels
+    )
+    axs[2].set_title("Residuals")
+    axs[2].set_xlabel("$x_1$")
+    axs[2].set_ylabel("$x_2$")
+
+    # Need separate colorbar
+    fig.colorbar(res_plot, ax=axs[2])
+
+    # Plot 4
+    stddev_plot = axs[3].contourf(
+        x1,
+        x2,
+        sigma_hat.reshape(x2.shape[0], x1.shape[0]),
+        cmap=cmap2,
+        levels=levels
+    )
+    axs[3].set_title("Standard deviation")
+    axs[3].set_xlabel("$x_1$")
+    axs[3].set_ylabel("$x_2$")
+
+    # Need separate colorbar
+    fig.colorbar(stddev_plot, ax=axs[3])
+
+    fig.suptitle(title, fontsize=30, fontweight="bold")
+
+    return fig, axs
+
 
 
 def plot_2d_predictions(
