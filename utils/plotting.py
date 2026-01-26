@@ -71,7 +71,7 @@ def plot_2d_predictions(
     norm1 = plt.Normalize(vmin, vmax)
 
     # Plot 1: Actual data
-    axs[0].contourf(
+    actual_data = axs[0].contourf(
         x1,
         x2,
         y_flat.reshape(x2.shape[0], x1.shape[0]),
@@ -83,9 +83,10 @@ def plot_2d_predictions(
     axs[0].set_title("Underlying data")
     axs[0].set_xlabel("$x_1$")
     axs[0].set_ylabel("$x_2$")
+    fig.colorbar(actual_data, ax=axs[0])
 
     # Plot 2: Predicted mean
-    axs[1].contourf(
+    mean_approx = axs[1].contourf(
         x1,
         x2,
         mu_flat.reshape(x2.shape[0], x1.shape[0]),
@@ -97,19 +98,20 @@ def plot_2d_predictions(
     axs[1].set_title("Approximated Mean Function")
     axs[1].set_xlabel("$x_1$")
     axs[1].set_ylabel("$x_2$")
+    fig.colorbar(mean_approx, ax=axs[1])
 
     # Colorbar for top row
-    sm1 = ScalarMappable(cmap=cmap1, norm=norm1)
-    sm1.set_array([])
-    cbar_row1 = fig.colorbar(
-        sm1, ax=[axs[0], axs[1]], location="right", shrink=0.98
-    )
-    cbar_row1.set_label("Function value")
-
-    n_ticks = 9
-    ticks1 = np.linspace(vmin, vmax, n_ticks)
-    cbar_row1.set_ticks(ticks1)
-    cbar_row1.set_ticklabels([f"{tick:.2f}" for tick in ticks1])
+    # sm1 = ScalarMappable(cmap=cmap1, norm=norm1)
+    # sm1.set_array([])
+    # cbar_row1 = fig.colorbar(
+    #     sm1, ax=[axs[0], axs[1]], location="right", shrink=0.98
+    # )
+    # cbar_row1.set_label("Function value")
+    #
+    # n_ticks = 9
+    # ticks1 = np.linspace(vmin, vmax, n_ticks)
+    # cbar_row1.set_ticks(ticks1)
+    # cbar_row1.set_ticklabels([f"{tick:.2f}" for tick in ticks1])
 
     # ========== BOTTOM ROW: Residuals and Uncertainty ==========
 

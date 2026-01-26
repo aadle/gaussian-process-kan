@@ -9,7 +9,7 @@ import argparse
 import matplotlib.pyplot as plt
 import optax
 from data_setup import data_setup
-from plotting import plot_2d_predictions, plot_2d_results
+from plotting import plot_results, plot_results_normalized
 from jaxtyping import install_import_hook
 from sklearn.model_selection import train_test_split
 with install_import_hook("gpjax", "beartype.beartype"):
@@ -38,9 +38,23 @@ def init_gp(dataset, args):
     return posterior
 
 def main(args):
+
+    config = {
+        "model": "gaussian_process",
+        "kernel": args.kernel,
+        "test_fn": args.function,
+        "test_size": args.test_size,
+        "standardize": "std" if args.standardize else ''
+        }
+
+    path = "result_plots/"
+    filename =f"res_{config["model"]}_{config["kernel"]}_{config['test_fn']}_{config["standardize"]}"
+
+
     key = jr.key(args.key)
 
     x1, x2, X, y = data_setup(args)
+    print(jnp.min(y), jnp.max(y))
 
     match args.function:
         case "himmelblau":
@@ -87,9 +101,12 @@ def main(args):
         batch_size=args.batch_size
     )
 
+    # TODO:
+    # Even better would be an explicit training loop, such that we can calculate
+    # the MSE during training also.
+
     print("Negative Marginal log-likelihood: ", -gpx.objectives.conjugate_mll(opt_posterior, D))
 
-    # training with log-likelihood
     # When optimizing, sample approach or use GP posterior distribution
     # parameters as input for the loss function?
 
@@ -108,24 +125,37 @@ def main(args):
         predictive_std = predictive_std * y_train_stddev + y_train_mean # scale back
 
     res = y.flatten() - predictive_mean
-    fig, axs = plot_2d_predictions(
+
+    mse_opt = mse(y, predictive_mean)
+    print("MSE:", mse_opt)
+    fig, axs = plot_results_normalized(
         x1, 
         x2, 
         y=y, 
-        mu=predictive_mean, 
-        residuals=res, 
-        y_stddev=predictive_std
+        mu_hat=predictive_mean, 
+        sigma_hat=predictive_std,
+        title=f"Scaled results. GP {args.kernel}. MSE: {mse_opt:.4}"
     )
-    fig, axs = plot_2d_results(
+    plt.savefig(path+"norm_"+filename, dpi=100)
+    fig, axs = plot_results(
         x1, 
         x2, 
         y, 
         predictive_mean, 
-        predictive_std
+        predictive_std,
+        title=f"Raw results. GP {args.kernel}. MSE: {mse_opt:.4}",
     )
+    plt.savefig(path+"raw_"+filename, dpi=100)
+    # fig, axs = plot_results_cv(
+    #     x1, 
+    #     x2, 
+    #     y, 
+    #     predictive_mean, 
+    #     predictive_std
+    # )
     plt.show()
     
-    print("MSE:", mse(y, predictive_mean))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -149,7 +179,8 @@ if __name__ == "__main__":
         default="himmelblau",
     )
     parser.add_argument("--n_samples", nargs="?", default=20, type=int)
-    parser.add_argument("--standardize", nargs="?", default=False, type=bool)
+    # parser.add_argument("--standardize", nargs="?", default=False, type=bool)
+    parser.add_argument("--standardize", action="store_true", help="Enable standardization")
 
     # Model arguments
     parser.add_argument(

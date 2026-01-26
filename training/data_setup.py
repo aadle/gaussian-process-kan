@@ -49,4 +49,5 @@ def data_setup(args) -> [jax.Array | None, jax.Array | None]:
 
         case "grandcanyon":
            raise NotImplementedError(f"{args.function} is not implemented yet.") 
+
     return x1, x2, X, y

@@ -219,6 +219,9 @@ class GPKAN:
     # TODO: 
     # – [ ] Does not work properly if you pass in a jax.random.key? Key
     # splitting doesn't happen properly.
+    # - [ ] Narrow down why inference part does not work? Reshape issues
+    # here, but not elsewhere when running sample_statistics??? Resolve
+    # issue in model.py
     def sample_statistics(
         self,
         Xs_latent,

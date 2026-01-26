@@ -18,7 +18,7 @@ from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup
 from typing import Dict
-from plotting import plot_2d_predictions, plot_2d_results
+from plotting import plot_results_normalized, plot_results 
 
 jax.config.update("jax_enable_x64", True)
 
@@ -125,8 +125,9 @@ def training_loop(args, model, X_train, y_train, key):
         "latent_supports": False,
         "kernel_parameters": True, # Set to False to jointly optimize
     }
+    lr = args.learning_rate
     optimizer = optax.transforms.selective_transform(
-        optax.adam(args.learning_rate), freeze_mask=mask
+        optax.adam(lr), freeze_mask=mask
     )
     opt_state = optimizer.init(model_params)
 
@@ -148,14 +149,21 @@ def training_loop(args, model, X_train, y_train, key):
                 "kernel_parameters": False,
 
             }
+            # optimizer_chain = optax.chain(
+            #     optax.adam(args.learning_rate),
+            #     optax.keep_params_nonnegative() # naive solution given that mean of the kernels can be negative... works for now
+            # )
+
+            lr = args.learning_rate * 0.1
             optimizer_chain = optax.chain(
-                optax.adam(args.learning_rate),
+                optax.adam(lr),
                 optax.keep_params_nonnegative() # naive solution given that mean of the kernels can be negative... works for now
             )
             optimizer = optax.transforms.selective_transform(
                 optimizer_chain, freeze_mask=mask
             )
             opt_state = optimizer.init(model_params)
+
             print("Optimizing kernel parameters")
 
         for i in range(0, X_train.shape[0], args.batch_size):
@@ -186,7 +194,7 @@ def training_loop(args, model, X_train, y_train, key):
 
         if epoch % 10 == 0 or epoch == 0:
             print(
-                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}, LR: {args.learning_rate:.4f}"
+                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}, LR: {lr:.4f}"
             )
 
 def prediction(args, model, model_params, X):
@@ -242,17 +250,16 @@ def main(args):
             y = jnp.sqrt(y) # like in original implementation (himmelblau)
         case "goldstein":
             y = jnp.log(y)
-        case _:
-            y = jnp.sqrt(y)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
 
     # STD
-    # y_train_stddev = jnp.sqrt(jnp.var(y_train))
-    # y_train_mean = jnp.mean(y_train)
-    # y_train_std = (y_train - y_train_mean ) / y_train_stddev
+    if args.standardize:
+        y_train_stddev = jnp.sqrt(jnp.var(y_train))
+        y_train_mean = jnp.mean(y_train)
+        y_train_std = (y_train - y_train_mean ) / y_train_stddev
 
     # Model initialization
     model = GPKAN(
@@ -266,8 +273,11 @@ def main(args):
 
     # Training
     key = jr.PRNGKey(args.key)
-    # training_loop(args, model, X_train, y_train_std, key)
-    training_loop(args, model, X_train, y_train, key)
+
+    if args.standardize:
+        training_loop(args, model, X_train, y_train_std, key)
+    else:
+        training_loop(args, model, X_train, y_train, key)
 
     model_params = {
         "latent_grids": model.latent_grids,
@@ -284,33 +294,32 @@ def main(args):
     print(20*"=", "Prediction", 20*"=")
     mu, sigma = prediction(args, model, model_params, X)
 
-    # STD: Scale back predictions and uncertainty
-    # mu = mu * y_train_stddev + y_train_mean # scale back
-    # sigma = sigma * y_train_stddev + y_train_mean # scale back
+    # Scale back predictions and uncertainty if standardized
+    if args.standardize:
+        mu = mu * y_train_stddev + y_train_mean 
+        sigma = sigma * y_train_stddev + y_train_mean
 
     residuals = y.flatten() - mu.flatten()
+    print(mse(y.flatten() - mu.flatten()))
 
     # Plot the results...
-    fig, ax = plot_2d_predictions(
+    fig, ax = plot_results(
+        x1=x1,
+        x2=x2,
+        y=y,
+        mu_hat=mu,
+        sigma_hat=sigma,
+    )
+    fig, ax = plot_results_normalized(
         x1,
         x2,
         y,
         mu,
-        residuals,
         sigma,
     )
     plt.show()
 
-    fig, ax = plot_2d_results(
-        x1,
-        x2,
-        y,
-        mu,
-        sigma,
-    )
-    plt.show()
-
-    print(model_params["kernel_parameters"])
+    # Save the figures
 
     # Save the parameters of the finally trained model...
 
@@ -342,12 +351,13 @@ if __name__ == "__main__":
             "himmelblau",
             "goldstein",
             "trig",
-            "trollveggen"  # not implemented yet
+            "trollveggen",  
             "grandcanyon",  # not implemented yet
         ],
         default="himmelblau",
     )
     parser.add_argument("--n_samples", nargs="?", default=20, type=int)
+    parser.add_argument("--standardize", action="store_true", help="Enable standardization")
 
     # Training loop arguments
     parser.add_argument("--epochs", nargs="?", default=200, type=int)

@@ -1,10 +1,11 @@
 import jax.numpy as jnp
 
+
 def trig(x, y):
     assert jnp.all((0 <= x) & (x <= 5)) and jnp.all((0 <= y) & (y <= 5)), (
         "x and y must be in the range [0, 5]"
-    ) 
-    return jnp.sin(x) ** 10 + jnp.cos(10 + y * x) * jnp.cos(x) + 5 # JVDP
+    )
+    return jnp.sin(x) ** 10 + jnp.cos(10 + y * x) * jnp.cos(x) + 5  # JVDP
 
 
 def himmelblau(x, y):
