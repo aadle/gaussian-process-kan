@@ -17,7 +17,7 @@ from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup
 from typing import Dict
-from plotting import plot_2d_predictions, plot_2d_results
+from plotting import plot_results_normalized
 
 jax.config.update("jax_enable_x64", True)
 
@@ -107,7 +107,9 @@ def training_loop(args, model, X_train, y_train, key):
     # of parameters. This circumvents the need for two separate training
     # loops for each paramete.
 
-    optimizer = optax.transforms.selective_transform(optax.adam(args.learning_rate), freeze_mask=mask)
+    optimizer = optax.transforms.selective_transform(
+        optax.adam(args.learning_rate), freeze_mask=mask
+    )
     # optimizer = optax.chain(
     #     optax.adam(learning_rate=args.learning_rate), freeze(mask)
     # )  
@@ -220,8 +222,8 @@ def restore_parameters(path):
 def main(args):
     model_name = ','.join(str(x) for x in args.model_size)
 
-    # Data initialization
-    x1, x2, X, y = data_setup(args)
+    # Data initialization,
+    x1, x2, X, y = data_setup(args.function, n_samples=args.n_samples)
     y = jnp.sqrt(y)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
@@ -261,16 +263,16 @@ def main(args):
 
 
     # Plot the results...
-    fig, ax = plot_2d_predictions(
-        x1,
-        x2,
-        y,
-        mu,
-        residuals,
-        sigma,
-    )
+    # fig, ax = plot_results(
+    #     x1,
+    #     x2,
+    #     y,
+    #     mu,
+    #     residuals,
+    #     sigma,
+    # )
 
-    fig, ax = plot_2d_results(
+    fig, ax = plot_results_normalized(
         x1,
         x2,
         y,

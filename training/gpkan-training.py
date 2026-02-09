@@ -149,15 +149,12 @@ def training_loop(args, model, X_train, y_train, key):
                 "kernel_parameters": False,
 
             }
-            # optimizer_chain = optax.chain(
-            #     optax.adam(args.learning_rate),
-            #     optax.keep_params_nonnegative() # naive solution given that mean of the kernels can be negative... works for now
-            # )
 
+            # naive solution given to keep kernel parameters non-negative... works for now
             lr = args.learning_rate * 0.1
             optimizer_chain = optax.chain(
                 optax.adam(lr),
-                optax.keep_params_nonnegative() # naive solution given that mean of the kernels can be negative... works for now
+                optax.keep_params_nonnegative()
             )
             optimizer = optax.transforms.selective_transform(
                 optimizer_chain, freeze_mask=mask
@@ -210,7 +207,7 @@ def prediction(args, model, model_params, X):
             batch_X, 
             model_params["kernel_parameters"], 
             20, 
-            key=jr.key(233 + i)
+            key=jr.key(i)
         )
         mu_batches.append(mu_batch)
         sigma2_batches.append(sigma2_batch)
@@ -243,7 +240,7 @@ def main(args):
     model_name = ','.join(str(x) for x in args.model_size)
 
     # Data initialization
-    x1, x2, X, y = data_setup(args)
+    x1, x2, X, y = data_setup(args.function, args.n_samples)
 
     match args.function:
         case "himmelblau":
@@ -300,7 +297,7 @@ def main(args):
         sigma = sigma * y_train_stddev + y_train_mean
 
     residuals = y.flatten() - mu.flatten()
-    print(mse(y.flatten() - mu.flatten()))
+    print(mse(y.flatten(), mu.flatten()))
 
     # Plot the results...
     fig, ax = plot_results(
