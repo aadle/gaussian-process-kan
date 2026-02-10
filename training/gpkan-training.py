@@ -16,9 +16,9 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
-from data_setup import data_setup
+from data_setup import data_setup, standardize_data
 from typing import Dict
-from plotting import plot_results_normalized, plot_results 
+from plotting import plot_results_normalized 
 
 jax.config.update("jax_enable_x64", True)
 
@@ -89,7 +89,7 @@ def training_step(
     return updated_model_params, updated_opt_state, loss, batch_mse
 
 
-def training_loop(args, model, X_train, y_train, key):
+def training_loop(args, model, x_train, y_train, key):
     val_and_grad_fn = jax.jit(
         jax.value_and_grad(
             lambda params, X, y: loss_fn(
@@ -97,23 +97,23 @@ def training_loop(args, model, X_train, y_train, key):
                 model,
                 X,
                 y,
-                n_samples=model.n_grid_points,
+                n_samples=10,
             ),
             argnums=0,
         )
     )
 
-    mean_cov = jax.jit(lambda params, X:
-        model.sample_statistics(
+    mean_cov = jax.jit(
+        lambda params, X:
+            model.sample_statistics(
                 params["latent_grids"],
                 params["latent_supports"],
                 X,
                 params["kernel_parameters"],
-                n_samples=args.n_samples,
-            )
+                n_samples=10,
+        )
     )
 
-    # Optimizer
     model_params = {
         "latent_grids": model.latent_grids,
         "latent_supports": model.latent_supports,
@@ -127,11 +127,11 @@ def training_loop(args, model, X_train, y_train, key):
     }
     lr = args.learning_rate
     optimizer = optax.transforms.selective_transform(
-        optax.adam(lr), freeze_mask=mask
+        optax.adam(learning_rate=lr), freeze_mask=mask
     )
     opt_state = optimizer.init(model_params)
 
-    # Training loop
+    # Training history 
     loss_history = {
         "avg_nll": [],
         "avg_mse": [],
@@ -142,30 +142,33 @@ def training_loop(args, model, X_train, y_train, key):
         intra_mse = []
 
         # Switch optimizing latent support to kernel parameters
-        if epoch == int(args.epochs/2 - 1):
+        midway_point = args.epochs/2 - 1
+        if epoch == int(midway_point):
             mask = {
                 "latent_grids": args.freeze_x_latent,
                 "latent_supports": True,
                 "kernel_parameters": False,
-
             }
 
             # naive solution given to keep kernel parameters non-negative... works for now
-            lr = args.learning_rate * 0.1
+            scheduler_kernel = optax.linear_schedule(
+                args.learning_rate,
+                args.learning_rate * 1e-2,
+                midway_point
+            )
             optimizer_chain = optax.chain(
-                optax.adam(lr),
+                optax.adam(scheduler_kernel),
                 optax.keep_params_nonnegative()
             )
             optimizer = optax.transforms.selective_transform(
                 optimizer_chain, freeze_mask=mask
             )
             opt_state = optimizer.init(model_params)
-
             print("Optimizing kernel parameters")
 
-        for i in range(0, X_train.shape[0], args.batch_size):
+        for i in range(0, x_train.shape[0], args.batch_size):
             key, subkey = jr.split(key)
-            batch_X = X_train[i: i+args.batch_size, :]
+            batch_X = x_train[i: i+args.batch_size, :]
             batch_y = y_train[i: i+args.batch_size, :]
 
             model_params, opt_state, loss, batch_mse = training_step(
@@ -191,8 +194,9 @@ def training_loop(args, model, X_train, y_train, key):
 
         if epoch % 10 == 0 or epoch == 0:
             print(
-                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}, LR: {lr:.4f}"
+                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}"
             )
+    return loss_history
 
 def prediction(args, model, model_params, X):
     batch_size = args.batch_size
@@ -235,7 +239,6 @@ def restore_parameters(path):
 # - [ ] Add optional to plot the uncertainty without standardizing it to the
 # mean. See how that looks like.
 # - [ ] Create utility file.
-# - [ ]
 def main(args):
     model_name = ','.join(str(x) for x in args.model_size)
 
@@ -248,33 +251,32 @@ def main(args):
         case "goldstein":
             y = jnp.log(y)
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    x_train, x_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
 
-    # STD
-    if args.standardize:
-        y_train_stddev = jnp.sqrt(jnp.var(y_train))
-        y_train_mean = jnp.mean(y_train)
-        y_train_std = (y_train - y_train_mean ) / y_train_stddev
+    x_train_sd, x_train_mean, x_train_std = standardize_data(x_train)
+    x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
+
+    # # train-val split 
+    # x_train, x_val, y_train, y_val = train_test_split(
+    #     x_train_sd, y_train_all, test_size=args.test_size, random_state=args.key
+    # )
 
     # Model initialization
     model = GPKAN(
         layers=args.model_size,
         n_grid_points=args.n_inducing,
         seed=args.key,
-        grid_min=jnp.min(X_train),
-        grid_max=jnp.max(X_train),
+        grid_min=jnp.min(x_train_sd),
+        grid_max=jnp.max(x_train_sd),
         init_paramters=[1.75, 1.75], 
     )
 
     # Training
     key = jr.PRNGKey(args.key)
 
-    if args.standardize:
-        training_loop(args, model, X_train, y_train_std, key)
-    else:
-        training_loop(args, model, X_train, y_train, key)
+    losses = training_loop(args, model, x_train_sd, y_train, key)
 
     model_params = {
         "latent_grids": model.latent_grids,
@@ -283,30 +285,19 @@ def main(args):
     }
 
     # Test
-    # y_test_std = (y - y_train_mean) / y_train_std
-    # print(loss_fn(model_params, model, X, y_test_std))
+
+    mu_test, _ = prediction(args, model, model_params, x_test_sd)
+    print("Test MSE:", mse(y_test.flatten(), mu_test.flatten()))
+    
 
     # Do predictions on the entire dataset
-    print()
+    x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
+
     print(20*"=", "Prediction", 20*"=")
-    mu, sigma = prediction(args, model, model_params, X)
+    mu, sigma = prediction(args, model, model_params, x_std)
 
-    # Scale back predictions and uncertainty if standardized
-    if args.standardize:
-        mu = mu * y_train_stddev + y_train_mean 
-        sigma = sigma * y_train_stddev + y_train_mean
+    print("Full dataset MSE:", mse(y.flatten(), mu.flatten()))
 
-    residuals = y.flatten() - mu.flatten()
-    print(mse(y.flatten(), mu.flatten()))
-
-    # Plot the results...
-    fig, ax = plot_results(
-        x1=x1,
-        x2=x2,
-        y=y,
-        mu_hat=mu,
-        sigma_hat=sigma,
-    )
     fig, ax = plot_results_normalized(
         x1,
         x2,
@@ -353,12 +344,11 @@ if __name__ == "__main__":
         ],
         default="himmelblau",
     )
-    parser.add_argument("--n_samples", nargs="?", default=20, type=int)
-    parser.add_argument("--standardize", action="store_true", help="Enable standardization")
+    parser.add_argument("--n_samples", nargs="?", default=50, type=int)
 
     # Training loop arguments
     parser.add_argument("--epochs", nargs="?", default=200, type=int)
-    parser.add_argument("--learning_rate", nargs="?", default=1e-3, type=float)
+    parser.add_argument("--learning_rate", nargs="?", default=1e-2, type=float)
     parser.add_argument("--batch_size", nargs="?", default=32, type=int)
     parser.add_argument("--test_size", nargs="?", default=0.2, type=float)
 
