@@ -13,7 +13,7 @@ import jax.random as jr
 import optax
 import orbax.checkpoint as ocp
 import matplotlib.pyplot as plt
-from tqdm import tqdm
+import tqdm
 from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup, standardize_data
@@ -120,14 +120,14 @@ def training_loop(args, model, x_train, y_train, key):
         "kernel_parameters": model.kernel_parameters,
     }
 
-    mask = {
+    freeze_mask = {
         "latent_grids": args.freeze_x_latent,
         "latent_supports": False,
-        "kernel_parameters": True, # Set to False to jointly optimize
+        "kernel_parameters": False, # Set to False to jointly optimize
     }
     lr = args.learning_rate
     optimizer = optax.transforms.selective_transform(
-        optax.adam(learning_rate=lr), freeze_mask=mask
+        optax.adam(learning_rate=lr), freeze_mask=freeze_mask
     )
     opt_state = optimizer.init(model_params)
 
@@ -137,65 +137,73 @@ def training_loop(args, model, x_train, y_train, key):
         "avg_mse": [],
     }
 
-    for epoch in range(args.epochs):
-        intra_epoch_loss = []
-        intra_mse = []
+    with tqdm.trange(1, args.epochs + 1) as t:
+        for epoch in t:
+            intra_epoch_loss = []
+            intra_mse = []
 
-        # Switch optimizing latent support to kernel parameters
-        midway_point = args.epochs/2 - 1
-        if epoch == int(midway_point):
-            mask = {
-                "latent_grids": args.freeze_x_latent,
-                "latent_supports": True,
-                "kernel_parameters": False,
-            }
+            Switch optimizing latent support to kernel parameters
+            midway_point = args.epochs/2
+            if epoch == int(midway_point):
+                mask = {
+                    "latent_grids": args.freeze_x_latent,
+                    "latent_supports": True,
+                    "kernel_parameters": False,
+                }
+                scheduler_kernel = optax.linear_schedule(
+                    args.learning_rate,
+                    args.learning_rate * 1e-2,
+                    midway_point
+                )
+                optimizer_chain = optax.chain(
+                    optax.adam(scheduler_kernel),
+                    optax.keep_params_nonnegative() # circumvent the problem of negative kernel parameters. Bijection is another option
+                )
+                optimizer = optax.transforms.selective_transform(
+                    optimizer_chain, freeze_mask=mask
+                )
+                opt_state = optimizer.init(model_params)
+                print("Optimizing kernel parameters")
 
-            # naive solution given to keep kernel parameters non-negative... works for now
-            scheduler_kernel = optax.linear_schedule(
-                args.learning_rate,
-                args.learning_rate * 1e-2,
-                midway_point
+            for i in range(0, x_train.shape[0], args.batch_size):
+                key, subkey = jr.split(key)
+                batch_X = x_train[i: i+args.batch_size, :]
+                batch_y = y_train[i: i+args.batch_size, :]
+
+                model_params, opt_state, loss, batch_mse = training_step(
+                    model, 
+                    model_params, 
+                    opt_state, 
+                    optimizer,
+                    batch_X, 
+                    batch_y,
+                    val_and_grad_fn,
+                    mean_cov
+                )
+
+                if not jnp.isnan(loss):
+                    intra_epoch_loss.append(loss)
+                    intra_mse.append(batch_mse)
+
+                # Validation...
+
+            if len(intra_epoch_loss) > 0:
+                avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
+                avg_mse = sum(intra_mse) / len(intra_mse)
+                loss_history["avg_nll"].append(avg_nll)
+                loss_history["avg_mse"].append(avg_mse)
+
+
+            if epoch % 10 == 0 or epoch == 1:
+                t.set_postfix_str(
+                    f"NLL: {avg_nll:.4f}, MSE: {avg_mse:.4f}",
+                refresh=False,
             )
-            optimizer_chain = optax.chain(
-                optax.adam(scheduler_kernel),
-                optax.keep_params_nonnegative()
-            )
-            optimizer = optax.transforms.selective_transform(
-                optimizer_chain, freeze_mask=mask
-            )
-            opt_state = optimizer.init(model_params)
-            print("Optimizing kernel parameters")
 
-        for i in range(0, x_train.shape[0], args.batch_size):
-            key, subkey = jr.split(key)
-            batch_X = x_train[i: i+args.batch_size, :]
-            batch_y = y_train[i: i+args.batch_size, :]
-
-            model_params, opt_state, loss, batch_mse = training_step(
-                model, 
-                model_params, 
-                opt_state, 
-                optimizer,
-                batch_X, 
-                batch_y,
-                val_and_grad_fn,
-                mean_cov
-            )
-
-            if not jnp.isnan(loss):
-                intra_epoch_loss.append(loss)
-                intra_mse.append(batch_mse)
-
-        if len(intra_epoch_loss) > 0:
-            avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
-            avg_mse = sum(intra_mse) / len(intra_mse)
-            loss_history["avg_nll"].append(avg_nll)
-            loss_history["avg_mse"].append(avg_mse)
-
-        if epoch % 10 == 0 or epoch == 0:
-            print(
-                f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}"
-            )
+            # if epoch % 10 == 0 or epoch == 0:
+            #     print(
+            #         f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}"
+            #     )
     return loss_history
 
 def prediction(args, model, model_params, X):
@@ -203,7 +211,7 @@ def prediction(args, model, model_params, X):
     mu_batches = []
     sigma2_batches = []
 
-    for i in tqdm(range(0, X.shape[0], batch_size)):
+    for i in tqdm.tqdm(range(0, X.shape[0], batch_size)):
         batch_X = X[i:i+batch_size]
         mu_batch, sigma2_batch = model.sample_statistics(
             model_params["latent_grids"], 
@@ -258,9 +266,9 @@ def main(args):
     x_train_sd, x_train_mean, x_train_std = standardize_data(x_train)
     x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
 
-    # # train-val split 
+    # train-val split 
     # x_train, x_val, y_train, y_val = train_test_split(
-    #     x_train_sd, y_train_all, test_size=args.test_size, random_state=args.key
+    #     x_train_sd, y_train, test_size=args.test_size, random_state=args.key
     # )
 
     # Model initialization
@@ -270,13 +278,22 @@ def main(args):
         seed=args.key,
         grid_min=jnp.min(x_train_sd),
         grid_max=jnp.max(x_train_sd),
-        init_paramters=[1.75, 1.75], 
+        init_paramters=[2.0, 2.0], 
     )
 
     # Training
     key = jr.PRNGKey(args.key)
 
     losses = training_loop(args, model, x_train_sd, y_train, key)
+
+    # Loss and eval plots
+    fig, ax = plt.subplots(nrows=2)
+    ax[0].plot(losses["avg_nll"])
+    ax[0].set_title("Negative log-likelihood")
+    ax[1].plot(losses["avg_mse"])
+    ax[1].set_title("Mean Squared Error")
+    fig.suptitle("Loss and evaluation metrics during training")
+
 
     model_params = {
         "latent_grids": model.latent_grids,
@@ -285,17 +302,15 @@ def main(args):
     }
 
     # Test
-
+    print("\n", "Predicting on test set...", "\n")
     mu_test, _ = prediction(args, model, model_params, x_test_sd)
     print("Test MSE:", mse(y_test.flatten(), mu_test.flatten()))
     
 
     # Do predictions on the entire dataset
+    print("\n", "Predicting on full dataset...", "\n")
     x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
-
-    print(20*"=", "Prediction", 20*"=")
     mu, sigma = prediction(args, model, model_params, x_std)
-
     print("Full dataset MSE:", mse(y.flatten(), mu.flatten()))
 
     fig, ax = plot_results_normalized(
@@ -306,6 +321,8 @@ def main(args):
         sigma,
     )
     plt.show()
+
+    print(model_params["kernel_parameters"])
 
     # Save the figures
 
