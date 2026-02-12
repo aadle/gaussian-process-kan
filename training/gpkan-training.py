@@ -1,3 +1,12 @@
+# TODO:
+# Development
+# - [ ] Transform parameters to normal before predicting in training step
+# function
+
+# Features
+# - [ ] Enable the possibility of importing/exporting model parameters
+# - [ ]
+
 import argparse
 import jax
 import jax.numpy as jnp
@@ -6,34 +15,27 @@ import optax
 import orbax.checkpoint as ocp
 import matplotlib.pyplot as plt
 import tqdm
+
+from flax import nnx
 from gpkanmodel.model import GPKAN
 from sklearn.model_selection import train_test_split
 from data_setup import data_setup, standardize_data
 from typing import Dict
 from plotting import plot_results_normalized 
 
+from gpjax.parameters import transform, DEFAULT_BIJECTION
+
 jax.config.update("jax_enable_x64", True)
 
-# Bijection functions
-def softplus(x):
-    return jnp.log(jnp.exp(x) + 1.0)
 
-def softplus_inv(x):
-    return jnp.log(jnp.exp(x) - 1.0)
+def transform_params(params, inverse:bool=True):
+    return jax.tree_util.tree_map(
+        lambda s: transform(s, DEFAULT_BIJECTION, inverse=inverse),
+        params,
+        is_leaf=lambda x: isinstance(x, nnx.State)
+    )
 
-def transform_kernel_params(states_list, transform_fn):
-    def apply_transform(path, leaf):
-        path_keys = [str(k) for k in path]
-        
-        if 'kernel' in path_keys and any(k in ['lengthscale', 'variance'] for k in path_keys):
-            if hasattr(leaf, 'value') and isinstance(leaf.value, jnp.ndarray):
-                leaf.value = transform_fn(leaf.value)
-        
-        return leaf
-    
-    return jax.tree_util.tree_map_with_path(apply_transform, states_list)
 
-# Loss and evaluation metric
 def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
     diag_elements = jnp.diag(covariance) + jitter
     covariance_inv = jnp.diag(1.0 / diag_elements)
@@ -46,29 +48,30 @@ def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
         + (y_true - mean).T @ covariance_inv @ (y_true - mean)
     )
 
+
 def mse(y_true, y_pred):
     return jnp.mean((y_true.squeeze() - y_pred.squeeze()) ** 2)
 
-# Loss function
-def loss_fn(model_params, model, x_test, y_test, n_samples=10):
+
+def loss_fn(model_params, model, X_test, y_test, n_samples=10):
     latent_grids = model_params["latent_grids"]
     latent_supports = model_params["latent_supports"]
-    kernel_parameters = transform_kernel_params(
-        model_params["kernel_parameters"],
-        softplus
+    # kernel_parameters = model_params["kernel_parameters"]
+    kernel_parameters = transform_params(
+        model_params["kernel_parameters"], 
+        inverse=False
     )
 
     mean, covariance = model.sample_statistics(
         latent_grids,
         latent_supports,
-        x_test,
+        X_test,
         kernel_parameters,
         n_samples=n_samples,
     )
 
     return neg_loglikelihood(y_test, mean, covariance)
 
-# Training step
 def training_step(
     model,
     model_params,
@@ -85,11 +88,12 @@ def training_step(
         batch_y,
     )
     
-    if loss < 0 or jnp.isnan(loss) or jnp.isinf(loss):
-        mean, covariance = mean_cov(model_params, batch_X)
-        batch_mse = mse(batch_y, mean)
-        return model_params, opt_state, loss, batch_mse
+    if jnp.isnan(loss) or jnp.isinf(loss):
+        # mean, covariance = mean_cov(model_params, batch_X)
+        # batch_mse = mse(batch_y, mean)
+        return model_params, opt_state, loss, jnp.nan
 
+    pred_params = model_params
     mean, covariance = mean_cov(model_params, batch_X)
     batch_mse = mse(batch_y, mean)
     
@@ -103,7 +107,6 @@ def training_step(
     return updated_model_params, updated_opt_state, loss, batch_mse
 
 
-# Training loop
 def training_loop(args, model, x_train, y_train, key):
     val_and_grad_fn = jax.jit(
         jax.value_and_grad(
@@ -129,34 +132,25 @@ def training_loop(args, model, x_train, y_train, key):
         )
     )
 
-    # Retrieve model parameters
     model_params = {
         "latent_grids": model.latent_grids,
         "latent_supports": model.latent_supports,
         "kernel_parameters": model.kernel_parameters,
     }
-    model_params["kernel_parameters"] = transform_kernel_params(
-        model_params["kernel_parameters"], 
-        softplus_inv
-    ) # Transform kernel parameters to unconstrained space
 
-    # Set up optimizer
+    model_params["kernel_parameters"] = transform_params(
+        model_params["kernel_parameters"], 
+        inverse=True
+    )
+
     freeze_mask = {
         "latent_grids": args.freeze_x_latent,
         "latent_supports": False,
         "kernel_parameters": False, # Set to False to jointly optimize
     }
     lr = args.learning_rate
-    total_steps = args.epochs*(x_train.shape[0]//args.batch_size) + args.epochs
-    scheduler = optax.cosine_onecycle_schedule(
-        transition_steps=args.epochs,
-        peak_value=lr,
-        pct_start=0.10,
-        div_factor=0.30,
-        final_div_factor=100.0,
-    )
     optimizer = optax.transforms.selective_transform(
-        optax.adam(learning_rate=scheduler), freeze_mask=freeze_mask
+        optax.adam(learning_rate=lr), freeze_mask=freeze_mask
     )
     opt_state = optimizer.init(model_params)
 
@@ -172,27 +166,27 @@ def training_loop(args, model, x_train, y_train, key):
             intra_mse = []
 
             # Switch optimizing latent support to kernel parameters
-            # midway_point = args.epochs/2
-            # if epoch == int(midway_point):
-            #     mask = {
-            #         "latent_grids": args.freeze_x_latent,
-            #         "latent_supports": True,
-            #         "kernel_parameters": False,
-            #     }
-            #     scheduler_kernel = optax.linear_schedule(
-            #         args.learning_rate,
-            #         args.learning_rate * 1e-2,
-            #         midway_point
-            #     )
-            #     optimizer_chain = optax.chain(
-            #         optax.adam(scheduler_kernel),
-            #         optax.keep_params_nonnegative() # circumvent the problem of negative kernel parameters. Bijection is another option
-            #     )
-            #     optimizer = optax.transforms.selective_transform(
-            #         optimizer_chain, freeze_mask=mask
-            #     )
-            #     opt_state = optimizer.init(model_params)
-            #     print("Optimizing kernel parameters")
+            midway_point = args.epochs/2
+            if epoch == int(midway_point):
+                mask = {
+                    "latent_grids": args.freeze_x_latent,
+                    "latent_supports": True,
+                    "kernel_parameters": False,
+                }
+                scheduler_kernel = optax.linear_schedule(
+                    args.learning_rate,
+                    args.learning_rate * 1e-2,
+                    midway_point
+                )
+                optimizer_chain = optax.chain(
+                    optax.adam(scheduler_kernel),
+                    # optax.keep_params_nonnegative() # circumvent the problem of negative kernel parameters. Bijection is another option
+                )
+                optimizer = optax.transforms.selective_transform(
+                    optimizer_chain, freeze_mask=mask
+                )
+                opt_state = optimizer.init(model_params)
+                print("Optimizing kernel parameters")
 
             for i in range(0, x_train.shape[0], args.batch_size):
                 key, subkey = jr.split(key)
@@ -229,10 +223,6 @@ def training_loop(args, model, x_train, y_train, key):
                 refresh=False,
             )
 
-            # if epoch % 10 == 0 or epoch == 0:
-            #     print(
-            #         f"Epoch {epoch}: Avg. NLL: {avg_nll:.4f}, Avg. MSE: {avg_mse:.4f}"
-            #     )
     return loss_history
 
 def prediction(args, model, model_params, X):
@@ -329,10 +319,11 @@ def main(args):
         "latent_supports": model.latent_supports,
         "kernel_parameters": model.kernel_parameters,
     }
-    model_params["kernel_parameters"] = transform_kernel_params(
+
+    model_params["kernel_parameters"] = transform_params(
         model_params["kernel_parameters"], 
-        softplus
-    ) # Transform kernel parameters back to constrained space 
+        inverse=False
+    )
 
     # Test
     print("\n", "Predicting on test set...", "\n")
@@ -405,3 +396,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
