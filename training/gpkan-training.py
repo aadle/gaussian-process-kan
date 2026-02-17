@@ -1,11 +1,10 @@
 # TODO:
-# Development
-# - [ ] Transform parameters to normal before predicting in training step
-# function
-
-# Features
 # - [ ] Enable the possibility of importing/exporting model parameters
-# - [ ]
+# - [ ] Use a learning rate scheduler rather than the two-step optimizer setup.
+# - [ ] Add a validation check after training step
+# - [ ] Transform the parameters when calculating evaluation metric for a more
+# meaningful loss-eval plot
+# - [ ] Proper transformation of data for 'trollveggen' and 'grand canyon'
 
 import argparse
 import jax
@@ -89,11 +88,8 @@ def training_step(
     )
     
     if jnp.isnan(loss) or jnp.isinf(loss):
-        # mean, covariance = mean_cov(model_params, batch_X)
-        # batch_mse = mse(batch_y, mean)
         return model_params, opt_state, loss, jnp.nan
 
-    pred_params = model_params
     mean, covariance = mean_cov(model_params, batch_X)
     batch_mse = mse(batch_y, mean)
     
@@ -105,6 +101,17 @@ def training_step(
     model.kernel_parameters = updated_model_params["kernel_parameters"]
        
     return updated_model_params, updated_opt_state, loss, batch_mse
+
+def get_mean_cov(model, params, X):
+    kernel_parameters = transform_params(params["kernel_parameters"], inverse=False)
+
+    return model.sample_statistics(
+        params["latent_grids"],
+        params["latent_supports"],
+        X,
+        kernel_parameters,
+        n_samples=10,
+    )
 
 
 def training_loop(args, model, x_train, y_train, key):
@@ -121,23 +128,26 @@ def training_loop(args, model, x_train, y_train, key):
         )
     )
 
-    mean_cov = jax.jit(
-        lambda params, X:
-            model.sample_statistics(
-                params["latent_grids"],
-                params["latent_supports"],
-                X,
-                params["kernel_parameters"],
-                n_samples=10,
-        )
-    )
+    # TODO: transform parameters to normal when predicting. Faster here, or
+    # faster transforming in "training_step"?
+    # mean_cov = jax.jit(
+    #     lambda params, X:
+    #         model.sample_statistics(
+    #             params["latent_grids"],
+    #             params["latent_supports"],
+    #             X,
+    #             params["kernel_parameters"],
+    #             n_samples=10,
+    #     )
+    # )
+    #
+    mean_cov = jax.jit(lambda params_, X_: get_mean_cov(model, params_, X_))
 
     model_params = {
         "latent_grids": model.latent_grids,
         "latent_supports": model.latent_supports,
         "kernel_parameters": model.kernel_parameters,
     }
-
     model_params["kernel_parameters"] = transform_params(
         model_params["kernel_parameters"], 
         inverse=True
@@ -148,9 +158,20 @@ def training_loop(args, model, x_train, y_train, key):
         "latent_supports": False,
         "kernel_parameters": False, # Set to False to jointly optimize
     }
+    # TODO: Use a learning rate scheduler
     lr = args.learning_rate
+    total_steps = args.epochs*(jnp.ceil(x_train.shape[0]/args.batch_size)) + args.epochs
+
+    scheduler = optax.warmup_cosine_decay_schedule(
+        init_value=lr/100,
+        peak_value=lr,
+        warmup_steps=int(0.3 * total_steps),
+        decay_steps=total_steps,
+        end_value=lr/10,
+    )
+
     optimizer = optax.transforms.selective_transform(
-        optax.adam(learning_rate=lr), freeze_mask=freeze_mask
+        optax.adam(learning_rate=scheduler), freeze_mask=freeze_mask
     )
     opt_state = optimizer.init(model_params)
 
@@ -165,31 +186,32 @@ def training_loop(args, model, x_train, y_train, key):
             intra_epoch_loss = []
             intra_mse = []
 
-            # Switch optimizing latent support to kernel parameters
-            midway_point = args.epochs/2
-            if epoch == int(midway_point):
-                mask = {
-                    "latent_grids": args.freeze_x_latent,
-                    "latent_supports": True,
-                    "kernel_parameters": False,
-                }
-                scheduler_kernel = optax.linear_schedule(
-                    args.learning_rate,
-                    args.learning_rate * 1e-2,
-                    midway_point
-                )
-                optimizer_chain = optax.chain(
-                    optax.adam(scheduler_kernel),
-                    # optax.keep_params_nonnegative() # circumvent the problem of negative kernel parameters. Bijection is another option
-                )
-                optimizer = optax.transforms.selective_transform(
-                    optimizer_chain, freeze_mask=mask
-                )
-                opt_state = optimizer.init(model_params)
-                print("Optimizing kernel parameters")
+            # # TODO: Use a learning rate scheduler
+            # # Switch optimizing latent support to kernel parameters
+            # midway_point = args.epochs/2
+            # if epoch == int(midway_point):
+            #     mask = {
+            #         "latent_grids": args.freeze_x_latent,
+            #         "latent_supports": True,
+            #         "kernel_parameters": False,
+            #     }
+            #     scheduler_kernel = optax.linear_schedule(
+            #         args.learning_rate,
+            #         args.learning_rate * 1e-2,
+            #         midway_point
+            #     )
+            #     optimizer_chain = optax.chain(
+            #         optax.adam(scheduler_kernel),
+            #         # optax.keep_params_nonnegative() # circumvent the problem of negative kernel parameters. Bijection is another option
+            #     )
+            #     optimizer = optax.transforms.selective_transform(
+            #         optimizer_chain, freeze_mask=mask
+            #     )
+            #     opt_state = optimizer.init(model_params)
+            #     print("Optimizing kernel parameters")
 
             for i in range(0, x_train.shape[0], args.batch_size):
-                key, subkey = jr.split(key)
+                # key, subkey = jr.split(key)
                 batch_X = x_train[i: i+args.batch_size, :]
                 batch_y = y_train[i: i+args.batch_size, :]
 
@@ -208,7 +230,7 @@ def training_loop(args, model, x_train, y_train, key):
                     intra_epoch_loss.append(loss)
                     intra_mse.append(batch_mse)
 
-                # Validation...
+                # TODO: Validation...
 
             if len(intra_epoch_loss) > 0:
                 avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
@@ -260,21 +282,15 @@ def restore_parameters(path):
     model_params = checkpointer.restore(path)
     return model_params
 
-
-# TODO: 
-# - [ ] Clean up the code.
-# - [ ] Add optional to plot the uncertainty without standardizing it to the
-# mean. See how that looks like.
-# - [ ] Create utility file.
 def main(args):
-    model_name = ','.join(str(x) for x in args.model_size)
+    model_name = ''.join(str(x) for x in args.model_size)
 
     # Data initialization
     x1, x2, X, y = data_setup(args.function, args.n_samples)
 
     match args.function:
         case "himmelblau":
-            y = jnp.sqrt(y) # like in original implementation (himmelblau)
+            y = jnp.sqrt(y)
         case "goldstein":
             y = jnp.log(y)
 
@@ -302,16 +318,20 @@ def main(args):
 
     # Training
     key = jr.PRNGKey(args.key)
-
     losses = training_loop(args, model, x_train_sd, y_train, key)
 
     # Loss and eval plots
-    fig, ax = plt.subplots(nrows=2)
-    ax[0].plot(losses["avg_nll"])
-    ax[0].set_title("Negative log-likelihood")
-    ax[1].plot(losses["avg_mse"])
-    ax[1].set_title("Mean Squared Error")
-    fig.suptitle("Loss and evaluation metrics during training")
+    fig_loss, ax_loss = plt.subplots(nrows=2, figsize=())
+    ax_loss[0].plot(losses["avg_nll"])
+    ax_loss[0].set_title("Negative log-likelihood")
+    ax_loss[1].plot(losses["avg_mse"])
+    ax_loss[1].set_title("Mean Squared Error")
+    fig_loss.suptitle("Loss and evaluation metrics during training")
+
+    filename = model_name + "-" + args.function
+    filepath = "./result_plots/gpkan/"
+    plt.tight_layout()
+    fig_loss.savefig(filepath+filename+"_loss_eval.png", dpi=500)
 
 
     model_params = {
@@ -319,7 +339,6 @@ def main(args):
         "latent_supports": model.latent_supports,
         "kernel_parameters": model.kernel_parameters,
     }
-
     model_params["kernel_parameters"] = transform_params(
         model_params["kernel_parameters"], 
         inverse=False
@@ -328,27 +347,30 @@ def main(args):
     # Test
     print("\n", "Predicting on test set...", "\n")
     mu_test, _ = prediction(args, model, model_params, x_test_sd)
-    print("Test MSE:", mse(y_test.flatten(), mu_test.flatten()))
-    
+    test_mse = mse(y_test.flatten(), mu_test.flatten())
+    print(f"Test MSE: {test_mse:.6f}")
 
     # Do predictions on the entire dataset
     print("\n", "Predicting on full dataset...", "\n")
     x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
     mu, sigma = prediction(args, model, model_params, x_std)
-    print("Full dataset MSE:", mse(y.flatten(), mu.flatten()))
+    full_mse = mse(y.flatten(), mu.flatten())
+    print(f"Full dataset MSE: {full_mse:.6f}")
 
-    fig, ax = plot_results_normalized(
+    model_size = "-".join([str(x) for x in args.model_size])
+    fig_pred, ax_pred = plot_results_normalized(
         x1,
         x2,
         y,
         mu,
         sigma,
+        figsize=(20, 5),
+        title=f"{model_size} GPKAN, MSE: {full_mse:.4f}"
     )
+    fig_pred.savefig(filepath+filename+"_results.png", dpi=500)
     plt.show()
 
-    print(model_params["kernel_parameters"])
-
-    # Save the figures
+    # print(model_params["kernel_parameters"])
 
     # Save the parameters of the finally trained model...
 
