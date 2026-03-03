@@ -245,22 +245,19 @@ def restore_parameters(path):
 
 def main(args):
     model_name = ''.join(str(x) for x in args.model_size)
+    filename = model_name + "-" + args.function
+    filepath = "./result_plots/gpkan/"
 
     # Data initialization
     x1, x2, X, y = data_setup(args.function, args.n_samples)
-
-    # TODO: Proper data setup depending on the function as preprocessing differs
-    match args.function:
-        case "himmelblau":
-            y = jnp.sqrt(y)
-        case "goldstein":
-            y = jnp.log(y)
 
     x_train, x_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
 
     x_train_sd, x_train_mean, x_train_std = standardize_data(x_train)
+    y_train_sd, y_train_mean, y_train_std = standardize_data(y_train)
+
     x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
 
     # train-val split 
@@ -280,7 +277,7 @@ def main(args):
 
     # Training
     key = jr.PRNGKey(args.key)
-    losses = training_loop(args, model, x_train_sd, y_train, key)
+    losses = training_loop(args, model, x_train_sd, y_train_sd, key)
 
     # Loss and eval plots
     fig_loss, ax_loss = plt.subplots(nrows=2)
@@ -291,10 +288,8 @@ def main(args):
     fig_loss.suptitle("Loss and evaluation metrics during training")
     plt.tight_layout()
 
-    filename = model_name + "-" + args.function
-    filepath = "./result_plots/gpkan/"
+    
     fig_loss.savefig(filepath+filename+"_loss_eval.png", dpi=500)
-
 
     model_params = {
         "latent_grids": model.latent_grids,
@@ -306,28 +301,33 @@ def main(args):
         inverse=False
     )
 
-    # Test
     print("\n", "Predicting on test set...", "\n")
-    mu_test, _ = prediction(args, model, model_params, x_test_sd)
-    test_mse = mse(y_test.flatten(), mu_test.flatten())
+
+    y_hat_test, _ = prediction(args, model, model_params, x_test_sd)
+    y_hat_test_rescaled = y_hat_test * y_train_std + y_train_mean
+    test_mse = mse(y_hat_test_rescaled.flatten(), y_test.flatten())
     print(f"Test MSE: {test_mse:.6f}")
 
-    # Do predictions on the entire dataset
     print("\n", "Predicting on full dataset...", "\n")
+
     x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
-    mu, sigma = prediction(args, model, model_params, x_std)
-    full_mse = mse(y.flatten(), mu.flatten())
+    mu_hat, sigma = prediction(args, model, model_params, x_std)
+    sigma_rescaled = sigma * y_train_std # only multiply??
+    mu_hat_rescaled = mu_hat * y_train_std + y_train_mean
+    full_mse = mse(y.flatten(), mu_hat_rescaled.flatten())
     print(f"Full dataset MSE: {full_mse:.6f}")
 
+    # Plotting full results
     model_size = "-".join([str(x) for x in args.model_size])
     fig_pred, ax_pred = plot_results_normalized(
         x1,
         x2,
         y,
-        mu,
-        sigma,
+        mu_hat_rescaled,
+        sigma_rescaled,
         figsize=(20, 5),
-        title=f"{model_size} GPKAN, MSE: {full_mse:.4f}"
+        title=f"{model_size} GPKAN, MSE: {full_mse:.4f}",
+        clip_outliers=True
     )
     fig_pred.savefig(filepath+filename+"_results.png", dpi=500)
     plt.show()
@@ -335,6 +335,8 @@ def main(args):
     # print(model_params["kernel_parameters"])
 
     # Save the parameters of the finally trained model...
+
+    # Save the predictions...
 
 
 if __name__ == "__main__":
@@ -361,13 +363,10 @@ if __name__ == "__main__":
         "--function",
         nargs="?",
         choices=[
-            "himmelblau",
-            "goldstein",
-            "trig",
             "trollveggen",  
-            "grandcanyon",  # not implemented yet
+            "grandcanyon",
         ],
-        default="himmelblau",
+        default="trollveggen",
     )
     parser.add_argument("--n_samples", nargs="?", default=50, type=int)
 
