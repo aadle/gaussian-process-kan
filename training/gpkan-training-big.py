@@ -1,6 +1,6 @@
 # TODO:
 # - [ ] Enable the possibility of importing/exporting model parameters
-# - [ ] Add a validation check after training step
+# - [ ] Add a validation step after training step
 # - [ ] Proper transformation of data for 'trollveggen' and 'grand canyon'
 
 import argparse
@@ -24,14 +24,6 @@ from gpjax.parameters import transform, DEFAULT_BIJECTION
 jax.config.update("jax_enable_x64", True)
 
 
-def transform_params(params, inverse:bool=True):
-    return jax.tree_util.tree_map(
-        lambda s: transform(s, DEFAULT_BIJECTION, inverse=inverse),
-        params,
-        is_leaf=lambda x: isinstance(x, nnx.State)
-    )
-
-
 def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
     diag_elements = jnp.diag(covariance) + jitter
     covariance_inv = jnp.diag(1.0 / diag_elements)
@@ -44,15 +36,20 @@ def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
         + (y_true - mean).T @ covariance_inv @ (y_true - mean)
     )
 
-
 def mse(y_true, y_pred):
     return jnp.mean((y_true.squeeze() - y_pred.squeeze()) ** 2)
 
 
+def transform_params(params, inverse:bool=True):
+    return jax.tree_util.tree_map(
+        lambda s: transform(s, DEFAULT_BIJECTION, inverse=inverse),
+        params,
+        is_leaf=lambda x: isinstance(x, nnx.State)
+    )
+
 def loss_fn(model_params, model, X_test, y_test, n_samples=10):
     latent_grids = model_params["latent_grids"]
     latent_supports = model_params["latent_supports"]
-    # kernel_parameters = model_params["kernel_parameters"]
     kernel_parameters = transform_params(
         model_params["kernel_parameters"], 
         inverse=False
@@ -111,7 +108,7 @@ def get_mean_cov(model, params, X):
     )
 
 
-def training_loop(args, model, x_train, y_train, key):
+def training_loop(args, model, x_train, y_train, x_val, y_val, key):
     val_and_grad_fn = jax.jit(
         jax.value_and_grad(
             lambda params, X, y: loss_fn(
@@ -139,12 +136,6 @@ def training_loop(args, model, x_train, y_train, key):
         inverse=True
     )
 
-    freeze_mask = {
-        "latent_grids": args.freeze_x_latent,
-        "latent_supports": False,
-        "kernel_parameters": False, # Set to False to jointly optimize
-    }
-
     total_steps = args.epochs*(jnp.ceil(x_train.shape[0]/args.batch_size)) + args.epochs
     scheduler = optax.warmup_cosine_decay_schedule(
         init_value=args.learning_rate/100,
@@ -153,25 +144,28 @@ def training_loop(args, model, x_train, y_train, key):
         decay_steps=total_steps,
         end_value=args.learning_rate/10,
     )
-    optimizer = optax.transforms.selective_transform(
-        optax.adam(learning_rate=scheduler), freeze_mask=freeze_mask
-    )
+
+    optimizer = optax.adam(learning_rate=scheduler)
     opt_state = optimizer.init(model_params)
 
     # Training history 
     loss_history = {
-        "avg_nll": [],
-        "avg_mse": [],
+        "train_nll": [],
+        "train_mse": [],
+        "val_nll": [],
+        "val_mse": []
     }
 
-    with tqdm.trange(1, args.epochs + 1) as t:
+    with tqdm.trange(1, args.epochs+1) as t:
         for epoch in t:
-            intra_epoch_loss = []
+            intra_nll = []
             intra_mse = []
+            intra_val_nll = []
+            intra_val_mse = []
 
             for i in range(0, x_train.shape[0], args.batch_size):
                 key, subkey = jr.split(key)
-                batch_X = x_train[i: i+args.batch_size, :]
+                batch_x = x_train[i: i+args.batch_size, :]
                 batch_y = y_train[i: i+args.batch_size, :]
 
                 model_params, opt_state, loss, batch_mse = training_step(
@@ -179,31 +173,34 @@ def training_loop(args, model, x_train, y_train, key):
                     model_params, 
                     opt_state, 
                     optimizer,
-                    batch_X, 
+                    batch_x, 
                     batch_y,
                     val_and_grad_fn,
                     mean_cov,
                     subkey
                 )
+                intra_nll.append(loss)
+                intra_mse.append(batch_mse)
 
-                if not jnp.isnan(loss):
-                    intra_epoch_loss.append(loss)
-                    intra_mse.append(batch_mse)
+                val_mean, _ = get_mean_cov(model, model_params, x_val)
+                intra_val_mse.append(mse(y_val, val_mean))
+                intra_val_nll.append(loss_fn(model_params, model, x_val, y_val))
+                
+            train_nll = sum(intra_nll) / args.batch_size
+            train_mse = sum(intra_mse) / args.batch_size
+            loss_history["train_nll"].append(train_nll)
+            loss_history["train_mse"].append(train_mse)
 
-                # TODO: Validation...
-
-            if len(intra_epoch_loss) > 0:
-                avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
-                avg_mse = sum(intra_mse) / len(intra_mse)
-                loss_history["avg_nll"].append(avg_nll)
-                loss_history["avg_mse"].append(avg_mse)
-
-
+            val_nll = sum(intra_val_nll) / args.batch_size
+            val_mse = sum(intra_val_mse) / args.batch_size
+            loss_history["val_nll"].append(val_nll)
+            loss_history["val_mse"].append(val_mse)
+            
             if epoch % 10 == 0 or epoch == 1:
                 t.set_postfix_str(
-                    f"NLL: {avg_nll:.4f}, MSE: {avg_mse:.4f}",
-                refresh=False,
-            )
+                    f"train NLL: {train_nll:.3f}, val NLL: {val_nll:.3f}",
+                    refresh=False,
+                )
 
     return loss_history
 
@@ -222,7 +219,7 @@ def prediction(args, model, model_params, X):
             model_params["kernel_parameters"], 
             20, 
             key=jr.key(i)
-        )
+        ) # TODO: check why using a split key does not work...
         mu_batches.append(mu_batch)
         sigma2_batches.append(sigma2_batch)
 
@@ -251,19 +248,22 @@ def main(args):
     # Data initialization
     x1, x2, X, y = data_setup(args.function, args.n_samples)
 
+    # Initial train-test split
     x_train, x_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
 
+    # Standardize training data
     x_train_sd, x_train_mean, x_train_std = standardize_data(x_train)
     y_train_sd, y_train_mean, y_train_std = standardize_data(y_train)
 
+    # Apply standardization to test data
     x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
 
-    # train-val split 
-    # x_train, x_val, y_train, y_val = train_test_split(
-    #     x_train_sd, y_train, test_size=args.test_size, random_state=args.key
-    # )
+    # Train-validation split 
+    x_train, x_val, y_train, y_val = train_test_split(
+        x_train_sd, y_train, test_size=args.test_size, random_state=args.key
+    )
 
     # Model initialization
     model = GPKAN(
@@ -275,22 +275,24 @@ def main(args):
         init_paramters=[2.0, 2.0], 
     )
 
-    # Training
+    # Training loop
     key = jr.PRNGKey(args.key)
-    losses = training_loop(args, model, x_train_sd, y_train_sd, key)
+    # losses = training_loop(args, model, x_train_sd, y_train_sd, key)
+    losses = training_loop(args, model, x_train_sd, y_train_sd, x_val, y_val, key)
 
-    # Loss and eval plots
+    # Loss and evaluation plots of training
     fig_loss, ax_loss = plt.subplots(nrows=2)
-    ax_loss[0].plot(losses["avg_nll"])
+    ax_loss[0].plot(losses["train_nll"])
     ax_loss[0].set_title("Negative log-likelihood")
-    ax_loss[1].plot(losses["avg_mse"])
+    ax_loss[1].plot(losses["train_mse"])
     ax_loss[1].set_title("Mean Squared Error")
     fig_loss.suptitle("Loss and evaluation metrics during training")
     plt.tight_layout()
 
-    
     fig_loss.savefig(filepath+filename+"_loss_eval.png", dpi=500)
 
+    # Retrieve kernel parameters from trained model and transform back to original
+    # parameter space
     model_params = {
         "latent_grids": model.latent_grids,
         "latent_supports": model.latent_supports,
@@ -301,19 +303,21 @@ def main(args):
         inverse=False
     )
 
-    print("\n", "Predicting on test set...", "\n")
 
+    # Prediction on the test set
+    print("\n", "Predicting on test set...", "\n")
     y_hat_test, _ = prediction(args, model, model_params, x_test_sd)
-    y_hat_test_rescaled = y_hat_test * y_train_std + y_train_mean
+    y_hat_test_rescaled = y_hat_test * y_train_std + y_train_mean # rescaling to original scale
     test_mse = mse(y_hat_test_rescaled.flatten(), y_test.flatten())
     print(f"Test MSE: {test_mse:.6f}")
 
-    print("\n", "Predicting on full dataset...", "\n")
 
-    x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
+    # Prediction on the full dataset
+    print("\n", "Predicting on full dataset...", "\n")
+    x_std, _, _ = standardize_data(X, x_train_mean, x_train_std) # standardize data w.r.t. training set parameters
     mu_hat, sigma = prediction(args, model, model_params, x_std)
-    sigma_rescaled = sigma * y_train_std # only multiply??
-    mu_hat_rescaled = mu_hat * y_train_std + y_train_mean
+    sigma_rescaled = sigma * y_train_std # rescaling to original scale
+    mu_hat_rescaled = mu_hat * y_train_std + y_train_mean # rescaling to original scale
     full_mse = mse(y.flatten(), mu_hat_rescaled.flatten())
     print(f"Full dataset MSE: {full_mse:.6f}")
 
