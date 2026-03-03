@@ -54,9 +54,26 @@ def data_setup(fn_name:str, n_samples:int) -> [Array | None, Array | None]:
             y = filtered_trollveggen[:, 2].reshape(-1, 1)
 
         case "grandcanyon":
-            raise NotImplementedError(
-                "'grandcanyon' is not implemented yet."
+            df_grandcanyon = pd.read_csv("../datasets/grand_canyon.csv")
+            grandcanyon = jnp.array(df_grandcanyon.values)
+            x1_min, x1_max = -112.1, -111.85  
+            x2_min, x2_max = 36.025, 36.275  
+            filtered_grandcanyon = grandcanyon[
+                (grandcanyon[:, 0] >= x1_min)
+                & (grandcanyon[:, 0] <= x1_max)
+                & (grandcanyon[:, 1] >= x2_min)
+                & (grandcanyon[:, 1] <= x2_max)
+            ]
+            x1 = jnp.sort(jnp.unique(filtered_grandcanyon[:, 0]))
+            x2 = jnp.sort(
+                jnp.unique(filtered_grandcanyon[:, 1]), descending=True
             )
+            X = filtered_grandcanyon[:, :2]
+            y = filtered_grandcanyon[:, 2].reshape(-1, 1)
+
+            # raise NotImplementedError(
+            #     "'grandcanyon' is not implemented yet."
+            # )
 
     return x1, x2, X, y
 
