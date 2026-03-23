@@ -232,7 +232,6 @@ def prediction(args, model, model_params, X):
 
     return mu_full, y_stddev 
     
-
 def save_parameters(model_params:Dict, path):
     path = ocp.test_utils.erase_and_create_empty(path)
     checkpointer = ocp.StandardCheckpointer()
