@@ -6,6 +6,7 @@ EPOCHS=300
 FUNCTIONS=("himmelblau" "goldstein" "trig" "trollveggen" "grandcanyon")
 
 # Loop over each function
+# --model_size 2 5 5 1
 for FUNC in "${FUNCTIONS[@]}"; do
   echo "Running training for function: $FUNC"
   
@@ -14,7 +15,7 @@ for FUNC in "${FUNCTIONS[@]}"; do
     --test_size=$TEST_SIZE \
     --epochs=$EPOCHS \
     --function="$FUNC" \
-    --model_size 2 5 1
+    --model_size 2 5 5 1
   
   echo "Completed training for function: $FUNC"
   echo "---"

@@ -235,6 +235,7 @@ def restore_parameters(path):
 def main(args):
     working_dir = Path()
     model_name = '-'.join(str(x) for x in args.model_size)
+    print("Model size:", model_name)
     filename = model_name + " " + args.function
 
     result_path = working_dir/"results"
@@ -259,9 +260,9 @@ def main(args):
     x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
 
     # Train-validation split 
-    x_train, x_val, y_train, y_val = train_test_split(
-        x_train_sd, y_train, test_size=args.test_size, random_state=args.key
-    )
+    # x_train, x_val, y_train, y_val = train_test_split(
+    #     x_train_sd, y_train, test_size=args.test_size, random_state=args.key
+    # )
 
     # Model initialization
     model = GPKAN(
@@ -358,14 +359,17 @@ def main(args):
 
     # Data describing script run
     write_info_file(
-        dir_path / "info.txt",
-        model_name,
-        args,
-        elapsed_training_time,
-        elapsed_test_time,
-        elapsed_pred_time,
-        test_mse,
-        full_mse,
+        file_path=dir_path / "info.json",
+        model_name=model_name,
+        x=X,
+        x_train=x_train_sd,
+        x_test=x_test_sd,
+        args=args,
+        elapsed_training_time=float(elapsed_training_time),
+        elapsed_test_time=float(elapsed_test_time),
+        elapsed_pred_time=float(elapsed_pred_time),
+        test_mse=float(test_mse),
+        full_mse=float(full_mse),
     )
 
 if __name__ == "__main__":
@@ -386,18 +390,6 @@ if __name__ == "__main__":
         default=True,
         type=bool,
     )
-
-    # Data setup arguments
-    # parser.add_argument(
-    #     "--function",
-    #     nargs="?",
-    #     choices=[
-    #         "trollveggen",  
-    #         "grandcanyon",
-    #         "trig"
-    #     ],
-    #     default="trollveggen",
-    # )
 
     parser.add_argument(
         "--function",

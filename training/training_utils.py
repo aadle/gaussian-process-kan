@@ -1,55 +1,64 @@
+import json
 from datetime import datetime
 
-def write_info_file(file_path, model_name, args, elapsed_training_time, 
-                    elapsed_test_time, elapsed_pred_time, test_mse, full_mse):
-    info_content = []
+def write_info_file(
+    file_path,
+    model_name,
+    args,
+    x,
+    x_train,
+    x_test,
+    elapsed_training_time,
+    elapsed_test_time,
+    elapsed_pred_time,
+    test_mse,
+    full_mse,
+):
+    # Convert JAX array shapes to Python ints first
+    total_samples = int(x.shape[0])
+    train_samples = int(x_train.shape[0])
+    test_samples = int(x_test.shape[0])
+    train_pct = round(100 * train_samples / total_samples, 1)
+    test_pct = round(100 * test_samples / total_samples, 1)
     
-    # Header with timestamp
-    info_content.append("=" * 80)
-    info_content.append("gaussian process kolmogorov arnold network - run information")
-    info_content.append("=" * 80)
-    info_content.append(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    info_dict = {
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "model_information": {
+            "model_name": model_name,
+            "architecture": args.model_size,
+            "inducing_points_per_activation": args.n_inducing,
+            "freeze_latent_grid": args.freeze_x_latent,
+        },
+        "data_configuration": {
+            "function": args.function,
+            "total_samples": total_samples,
+            "training_set": {
+                "samples": train_samples,
+                "percentage": train_pct,
+            },
+            "test_set": {
+                "samples": test_samples,
+                "percentage": test_pct,
+            },
+        },
+        "training_configuration": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+        },
+        "performance_metrics": {
+            "training_time_seconds": round(elapsed_training_time, 6),
+            "test_prediction_time_seconds": round(elapsed_test_time, 6),
+            "full_prediction_time_seconds": round(elapsed_pred_time, 6),
+            "total_inference_time_seconds": round(elapsed_test_time + elapsed_pred_time, 6),
+        },
+        "results": {
+            "test_set_mse": round(test_mse, 6),
+            "full_dataset_mse": round(full_mse, 6),
+        },
+    }
     
-    # ==================== MODEL INFORMATION ====================
-    info_content.append("MODEL INFORMATION")
-    info_content.append("-" * 80)
-    info_content.append(f"Model + Function: {model_name}")
-    info_content.append(f"Architecture: {args.model_size}")
-    info_content.append(f"Inducing Points per Activation: {args.n_inducing}")
-    info_content.append(f"Freeze Latent Grid (x_latent): {args.freeze_x_latent}\n")
-    
-    # ==================== DATA CONFIGURATION ====================
-    info_content.append("DATA CONFIGURATION")
-    info_content.append("-" * 80)
-    info_content.append(f"Function: {args.function}")
-    # info_content.append(f"Number of Samples: {args.n_samples}")
-    # info_content.append(f"Test Set Size: {args.test_size} ({int(args.n_samples * args.test_size)} samples)")
-    # info_content.append(f"Training Set Size: {int(args.n_samples * (1 - args.test_size))} samples\n")
-    
-    # ==================== TRAINING CONFIGURATION ====================
-    info_content.append("TRAINING CONFIGURATION")
-    info_content.append("-" * 80)
-    info_content.append(f"Epochs: {args.epochs}")
-    info_content.append(f"Batch Size: {args.batch_size}")
-    info_content.append(f"Learning Rate: {args.learning_rate}")
-    # info_content.append(f"Random Seed (Key): {args.key}\n")
-    
-    # ==================== PERFORMANCE METRICS ====================
-    info_content.append("PERFORMANCE METRICS")
-    info_content.append("-" * 80)
-    info_content.append(f"Training Time: {elapsed_training_time:.6f} seconds")
-    info_content.append(f"Test Prediction Time: {elapsed_test_time:.6f} seconds")
-    info_content.append(f"Full Prediction Time: {elapsed_pred_time:.6f} seconds")
-    info_content.append(f"Total Inference Time: {elapsed_test_time + elapsed_pred_time:.6f} seconds\n")
-    
-    # ==================== RESULTS ====================
-    info_content.append("RESULTS")
-    info_content.append("-" * 80)
-    info_content.append(f"Test Set MSE: {test_mse:.6f}")
-    info_content.append(f"Full Dataset MSE: {full_mse:.6f}")
-    
-    # Write to file
     with open(file_path, "w") as f:
-        f.write("\n".join(info_content))
+        json.dump(info_dict, f, indent=4)
     
     print(f"Info file written to {file_path}")

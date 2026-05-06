@@ -1,7 +1,7 @@
 ================================================================================
 gaussian process kolmogorov arnold network - run information
 ================================================================================
-Timestamp: 2026-03-23 14:52:59
+Timestamp: 2026-03-23 17:08:01
 
 MODEL INFORMATION
 --------------------------------------------------------------------------------
@@ -20,10 +20,10 @@ Batch Size: 32
 Learning Rate: 0.01
 PERFORMANCE METRICS
 --------------------------------------------------------------------------------
-Training Time: 934.085041 seconds
-Test Prediction Time: 126.669883 seconds
-Full Prediction Time: 624.919378 seconds
-Total Inference Time: 751.589261 seconds
+Training Time: 987.382561 seconds
+Test Prediction Time: 130.187397 seconds
+Full Prediction Time: 632.987850 seconds
+Total Inference Time: 763.175247 seconds
 
 RESULTS
 --------------------------------------------------------------------------------
