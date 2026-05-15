@@ -1,0 +1,36 @@
+{
+    "timestamp": "2026-05-15 09:52:27",
+    "model_information": {
+        "model_name": "trig with matern52",
+        "architecture": null,
+        "inducing_points_per_activation": null,
+        "freeze_latent_grid": null
+    },
+    "data_configuration": {
+        "function": "trig",
+        "total_samples": 2500,
+        "training_set": {
+            "samples": 2000,
+            "percentage": 80.0
+        },
+        "test_set": {
+            "samples": 500,
+            "percentage": 20.0
+        }
+    },
+    "training_configuration": {
+        "epochs": 500,
+        "batch_size": 32,
+        "learning_rate": 0.001
+    },
+    "performance_metrics": {
+        "training_time_seconds": 0.490888,
+        "test_prediction_time_seconds": 0.62503,
+        "full_prediction_time_seconds": 1.197265,
+        "total_inference_time_seconds": 1.822295
+    },
+    "results": {
+        "test_set_mse": 0.055032,
+        "full_dataset_mse": 0.049643
+    }
+}

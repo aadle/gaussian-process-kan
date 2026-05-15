@@ -24,7 +24,7 @@ def plot_results_normalized(
     axs = axs.flatten()
     epsilon = 1e-6
 
-    y_flat     = np.asarray(y).flatten()
+    y_flat = np.asarray(y).flatten()
     mu_hat_flat = np.asarray(mu_hat).flatten()
     stddev_flat = np.asarray(sigma_hat).flatten()
 

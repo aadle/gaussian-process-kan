@@ -3,7 +3,12 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
+import matplotlib
+import matplotlib.pyplot as plt
 import time
+
+matplotlib.use('Agg')
+plt.ioff()
 
 from sklearn.model_selection import train_test_split
 from jaxtyping import install_import_hook
@@ -18,6 +23,16 @@ jax.config.update('jax_enable_x64', True)
 def mse(y_true, y_pred):
     return jnp.mean((y_true.squeeze() - y_pred.squeeze()) ** 2)
 
+def plot_training_history(history, output_path):
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(history)
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Negative MLL")
+    ax.set_title("Training loss")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
 def init_gp(dataset, kernel):
     meanf = gpx.mean_functions.Zero()
     prior = gpx.gps.Prior(mean_function=meanf, kernel=kernel)
@@ -25,6 +40,13 @@ def init_gp(dataset, kernel):
     posterior = prior * likelihood
 
     return posterior
+
+def get_gp_posterior(opt_posterior, x_in, train_data):
+    latent_distribution = opt_posterior.predict(x_in, train_data=train_data)
+    predictive_distribution = opt_posterior.likelihood(latent_distribution)
+    predictive_mean = predictive_distribution.mean()
+    predictive_std = predictive_distribution.stddev()
+    return predictive_mean, predictive_std
 
 def main(args):
     kernels = {
@@ -38,8 +60,9 @@ def main(args):
     cwd = Path()
     result_path = cwd/"results"
     result_path.mkdir(exist_ok=True)
-    
-    output_path = result_path/f"{args.kernel} {args.function}"
+    gp_path = result_path/"gp"
+    gp_path.mkdir(exist_ok=True)
+    output_path = gp_path/f"{args.kernel} {args.function}"
     output_path.mkdir(exist_ok=True)
 
     # === Set up data ===
@@ -80,23 +103,22 @@ def main(args):
     train_end = time.perf_counter()
     elapsed_training_time = train_end - train_start
 
-    print("Negative Marginal log-likelihood: ", 
+    print("Negative Marginal log-likelihood: ",
           -gpx.objectives.conjugate_mll(opt_posterior, train_dataset)
     )
 
-    # TODO:
-    # - [ ] Plot training curve
+    plot_training_history(history, output_path/"loss.png")
 
     # === Predictions with optimized posterior ===
 
     # Predictions on test set
     test_start = time.perf_counter()
-    test_latent_dist = opt_posterior.predict(x_test_sd, train_data=train_dataset)
-    test_pred_dist = opt_posterior.likelihood(test_latent_dist)
-    test_pred_mean = test_pred_dist.mean()
-    test_pred_std = test_pred_dist.stddev()
+    test_pred_mean, test_pred_std = get_gp_posterior(
+        opt_posterior=opt_posterior,
+        x_in=x_test_sd,
+        train_data=train_dataset
+    )
     test_end = time.perf_counter()
-
     elapsed_test_time = test_end - test_start
 
     test_rescaled_pred_mean = test_pred_mean * y_train_std + y_train_mean
@@ -105,18 +127,20 @@ def main(args):
     print("test MSE:", test_mse)
 
     # Predictions on entire dataset
-    x_sd = standardize_data(X, x_train_mean, x_train_std)
+    x_sd, _, _ = standardize_data(X, x_train_mean, x_train_std)
     pred_start = time.perf_counter()
-    full_latent_dist = opt_posterior.predict(x_sd, train_data=train_dataset)
-    full_pred_dist = opt_posterior.likelihood(full_latent_dist)
-    full_pred_mean = full_pred_dist.mean()
-    full_pred_std = full_pred_dist.stddev()
+    full_pred_mean, full_pred_std = get_gp_posterior(
+        opt_posterior=opt_posterior,
+        x_in=x_sd,
+        train_data=train_dataset
+    )
     pred_end = time.perf_counter()
     elapsed_pred_time = pred_end - pred_start
 
     rescaled_pred_mean = full_pred_mean * y_train_std + y_train_mean
     rescaled_pred_std = full_pred_std * y_train_std 
     full_mse = mse(y, rescaled_pred_mean)
+    print("Full MSE:", full_mse)
 
     jnp.save(output_path/"mean_predictions.npy", rescaled_pred_mean)
     jnp.save(output_path/"sigma_predictions.npy", rescaled_pred_std)

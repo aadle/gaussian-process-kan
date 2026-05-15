@@ -25,9 +25,9 @@ def write_info_file(
         "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         "model_information": {
             "model_name": model_name,
-            "architecture": args.model_size,
-            "inducing_points_per_activation": args.n_inducing,
-            "freeze_latent_grid": args.freeze_x_latent,
+            "architecture": getattr(args, "model_size", None),
+            "inducing_points_per_activation": getattr(args, "n_inducing", None),
+            "freeze_latent_grid": getattr(args, "freeze_x_latent", None),
         },
         "data_configuration": {
             "function": args.function,
