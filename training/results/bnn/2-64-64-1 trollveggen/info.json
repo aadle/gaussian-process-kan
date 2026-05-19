@@ -1,0 +1,38 @@
+{
+    "timestamp": "2026-05-05 08:20:40",
+    "model_information": {
+        "model_name": "2-64-64-1",
+        "architecture": "bnn"
+    },
+    "data_configuration": {
+        "function": "trollveggen",
+        "total_samples": 8722,
+        "training_set": {
+            "samples": 6977,
+            "percentage": 80.0
+        },
+        "validation_set": {
+            "samples": 1396,
+            "percentage": 16.0
+        },
+        "test_set": {
+            "samples": 1745,
+            "percentage": 20.0
+        }
+    },
+    "training_configuration": {
+        "epochs": 3000,
+        "batch_size": 150,
+        "learning_rate": 0.01
+    },
+    "performance_metrics": {
+        "training_time_seconds": 6.327048,
+        "test_prediction_time_seconds": 0.439632,
+        "full_prediction_time_seconds": 0.447014,
+        "total_inference_time_seconds": 0.886646
+    },
+    "results": {
+        "test_set_mse": 48571.222656,
+        "full_dataset_mse": 48083.808594
+    }
+}

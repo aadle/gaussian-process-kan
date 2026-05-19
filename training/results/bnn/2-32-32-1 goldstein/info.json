@@ -1,0 +1,38 @@
+{
+    "timestamp": "2026-04-30 10:14:24",
+    "model_information": {
+        "model_name": "2-32-32-1",
+        "architecture": "bnn"
+    },
+    "data_configuration": {
+        "function": "goldstein",
+        "total_samples": 2500,
+        "training_set": {
+            "samples": 2000,
+            "percentage": 80.0
+        },
+        "validation_set": {
+            "samples": 400,
+            "percentage": 16.0
+        },
+        "test_set": {
+            "samples": 500,
+            "percentage": 20.0
+        }
+    },
+    "training_configuration": {
+        "epochs": 3000,
+        "batch_size": 150,
+        "learning_rate": 0.01
+    },
+    "performance_metrics": {
+        "training_time_seconds": 5.279519,
+        "test_prediction_time_seconds": 0.511382,
+        "full_prediction_time_seconds": 0.563448,
+        "total_inference_time_seconds": 1.07483
+    },
+    "results": {
+        "test_set_mse": 981119104.0,
+        "full_dataset_mse": 1063864000.0
+    }
+}

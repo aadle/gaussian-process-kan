@@ -1,9 +1,10 @@
-import numpy as np
+from pathlib import Path
 import matplotlib.pyplot as plt
+import numpy as np
+from data_setup import data_setup
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import SymLogNorm
-from pathlib import Path
-from data_setup import data_setup
+
 
 def plot_results_normalized(
     x1,
@@ -12,9 +13,9 @@ def plot_results_normalized(
     mu_hat,
     sigma_hat,
     clip_outliers=False,
-    log_scale=False,           
+    log_scale=False,
     title="Results",
-    subplot_size=5,            
+    subplot_size=5,
     cmap1="viridis",
     cmap2="jet",
     dpi=100,
@@ -42,7 +43,8 @@ def plot_results_normalized(
         [(y_flat, "Underlying Data"), (mu_hat_flat, "Predicted Mean")]
     ):
         axs[i].contourf(
-            x1, x2,
+            x1,
+            x2,
             data.reshape(x2.shape[0], x1.shape[0]),
             levels=50,
             cmap=cmap1,
@@ -77,11 +79,12 @@ def plot_results_normalized(
             step = max(10.0, round(step / 10) * 10)
 
         vmin_clean = np.floor(d_min / step) * step
-        vmax_clean = np.ceil(d_max  / step) * step
+        vmax_clean = np.ceil(d_max / step) * step
         levels = np.linspace(vmin_clean, vmax_clean, 50)
 
         cf = ax.contourf(
-            x1, x2,
+            x1,
+            x2,
             data.reshape(x2.shape[0], x1.shape[0]),
             levels=levels,
             cmap=cmap2,
@@ -91,7 +94,7 @@ def plot_results_normalized(
         )
         ax.set_title(title_str)
         ax.set_xlabel("$x_1$")
-        ax.set_ylabel("$x_2$")           
+        ax.set_ylabel("$x_2$")
 
         cbar = fig.colorbar(cf, ax=ax, location="right", shrink=0.8)
         cbar.set_label("% Relative to Mean")
@@ -101,40 +104,64 @@ def plot_results_normalized(
         cbar.set_ticklabels([f"{t:.4g}" for t in tick_locs])
 
     scaled_res = np.abs((y_flat - mu_hat_flat) / (mu_hat_flat + epsilon)) * 100
-    plot_metric(axs[2], scaled_res, "Mean Scaled Residuals", clip_outliers=clip_outliers)
+    plot_metric(
+        axs[2], scaled_res, "Mean Scaled Residuals", clip_outliers=clip_outliers
+    )
 
     scaled_std = np.abs(stddev_flat / (mu_hat_flat + epsilon)) * 100
-    plot_metric(axs[3], scaled_std, "Mean Scaled Standard Deviation", clip_outliers=clip_outliers)
+    plot_metric(
+        axs[3],
+        scaled_std,
+        "Mean Scaled Standard Deviation",
+        clip_outliers=clip_outliers,
+    )
 
     fig.suptitle(title, fontsize=16, fontweight="bold")
     return fig, axs
 
+
 def main():
     results_dir = Path("results")
-    models = ["2-3-1", "2-5-1", "2-5-5-1"]
-    for model in models:
-        for fn_name in [
-            "himmelblau",
-            "goldstein",
-            "trig",
-            "trollveggen",
-            "grandcanyon",
-        ]:
-            model_dir = results_dir/f"{model} {fn_name}"
-            sigma_hat = np.load(model_dir / f"{model} sigma_predictions.npy")
-            mu_hat = np.load(model_dir / f"{model} mean_predictions.npy")
-            x1, x2, _, y = data_setup(fn_name, 50)
-            fig, axs = plot_results_normalized(
-                x1, 
-                x2, 
-                y, 
-                mu_hat, 
-                sigma_hat, 
-                clip_outliers=True, 
-                log_scale=False
+
+    for model_type_dir in [results_dir / "gp", results_dir / "gpkan"]:
+        if not model_type_dir.exists():
+            continue
+
+        for run_dir in sorted(model_type_dir.iterdir()):
+            if not run_dir.is_dir():
+                continue
+
+            dir_name = run_dir.name  # e.g. "rbf himmelblau" or "2-5-5-1 himmelblau"
+            _, fn_name = dir_name.split(" ", 1)
+
+            mu_path = run_dir / "mean_predictions.npy"
+            sigma_path = run_dir / "sigma_predictions.npy"
+
+            if not mu_path.exists() or not sigma_path.exists():
+                print(f"Skipping {run_dir.name}: prediction files not found")
+                continue
+
+            n_samples = 50
+            mu_hat = np.load(mu_path)
+            sigma_hat = np.load(sigma_path)
+            x1, x2, _, y = data_setup(fn_name, n_samples)
+
+            fig, _ = plot_results_normalized(
+                x1,
+                x2,
+                y,
+                mu_hat,
+                sigma_hat,
+                clip_outliers=True,
+                log_scale=False,
+                title=f"{dir_name} ({model_type_dir.name})",
             )
-            fig.savefig(model_dir/f"replot {model} {fn_name}.png", dpi=500)
-            print(f"result plotted at {model_dir/f"replot {model} {fn_name}.png"}")
+
+            out_path = run_dir / f"replot {dir_name}.png"
+            fig.savefig(out_path, dpi=500)
+            plt.close(fig)
+            print(f"Saved: {out_path}")
+
 
 if __name__ == "__main__":
     main()

@@ -352,8 +352,8 @@ def main(args):
     # save_parameters(model_params=model_params, path=params_path.absolute())
 
     # Save the predictions...
-    mean_pred_filename = f"{model_name} mean_predictions.npy"
-    sigma_pred_filename = f"{model_name} sigma_predictions.npy"
+    mean_pred_filename = "mean_predictions.npy"
+    sigma_pred_filename = "sigma_predictions.npy"
     jnp.save(dir_path/mean_pred_filename, mu_hat_rescaled)
     jnp.save(dir_path/sigma_pred_filename, sigma_hat_rescaled)
 
