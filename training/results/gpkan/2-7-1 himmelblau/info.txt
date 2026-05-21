@@ -1,0 +1,31 @@
+================================================================================
+gaussian process kolmogorov arnold network - run information
+================================================================================
+Timestamp: 2026-03-24 08:37:48
+
+MODEL INFORMATION
+--------------------------------------------------------------------------------
+Model + Function: 2-7-1
+Architecture: [2, 7, 1]
+Inducing Points per Activation: 10
+Freeze Latent Grid (x_latent): True
+
+DATA CONFIGURATION
+--------------------------------------------------------------------------------
+Function: himmelblau
+TRAINING CONFIGURATION
+--------------------------------------------------------------------------------
+Epochs: 300
+Batch Size: 32
+Learning Rate: 0.01
+PERFORMANCE METRICS
+--------------------------------------------------------------------------------
+Training Time: 417.388486 seconds
+Test Prediction Time: 54.950046 seconds
+Full Prediction Time: 261.786280 seconds
+Total Inference Time: 316.736326 seconds
+
+RESULTS
+--------------------------------------------------------------------------------
+Test Set MSE: 0.185897
+Full Dataset MSE: 0.183777

@@ -1,0 +1,41 @@
+{
+    "timestamp": "2026-04-07 18:05:59",
+    "model_information": {
+        "model_name": "2-5-5-1",
+        "architecture": [
+            2,
+            5,
+            5,
+            1
+        ],
+        "inducing_points_per_activation": 10,
+        "freeze_latent_grid": true
+    },
+    "data_configuration": {
+        "function": "grandcanyon",
+        "total_samples": 3600,
+        "training_set": {
+            "samples": 2880,
+            "percentage": 80.0
+        },
+        "test_set": {
+            "samples": 720,
+            "percentage": 20.0
+        }
+    },
+    "training_configuration": {
+        "epochs": 300,
+        "batch_size": 32,
+        "learning_rate": 0.01
+    },
+    "performance_metrics": {
+        "training_time_seconds": 1344.989818,
+        "test_prediction_time_seconds": 179.568406,
+        "full_prediction_time_seconds": 874.080837,
+        "total_inference_time_seconds": 1053.649243
+    },
+    "results": {
+        "test_set_mse": 30762.793712,
+        "full_dataset_mse": 29463.305864
+    }
+}

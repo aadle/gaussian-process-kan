@@ -1,0 +1,36 @@
+{
+    "timestamp": "2026-05-15 09:54:29",
+    "model_information": {
+        "model_name": "trollveggen with matern52",
+        "architecture": null,
+        "inducing_points_per_activation": null,
+        "freeze_latent_grid": null
+    },
+    "data_configuration": {
+        "function": "trollveggen",
+        "total_samples": 8722,
+        "training_set": {
+            "samples": 6977,
+            "percentage": 80.0
+        },
+        "test_set": {
+            "samples": 1745,
+            "percentage": 20.0
+        }
+    },
+    "training_configuration": {
+        "epochs": 500,
+        "batch_size": 32,
+        "learning_rate": 0.001
+    },
+    "performance_metrics": {
+        "training_time_seconds": 0.518875,
+        "test_prediction_time_seconds": 5.162718,
+        "full_prediction_time_seconds": 26.843886,
+        "total_inference_time_seconds": 32.006604
+    },
+    "results": {
+        "test_set_mse": 63160.036555,
+        "full_dataset_mse": 61632.08898
+    }
+}

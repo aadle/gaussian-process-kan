@@ -1,6 +1,6 @@
 # TODO:
 # - [ ] Enable the possibility of importing/exporting model parameters
-# - [ ] Add a validation step after training step
+# - [ ] Add a validation check after training step
 # - [ ] Proper transformation of data for 'trollveggen' and 'grand canyon'
 
 import argparse
@@ -11,10 +11,6 @@ import optax
 import orbax.checkpoint as ocp
 import matplotlib.pyplot as plt
 import tqdm
-import time
-import matplotlib
-
-matplotlib.use('Agg')
 
 from flax import nnx
 from gpkanmodel.model import GPKAN
@@ -22,12 +18,18 @@ from sklearn.model_selection import train_test_split
 from data_setup import data_setup, standardize_data
 from typing import Dict
 from plotting import plot_results_normalized 
+
 from gpjax.parameters import transform, DEFAULT_BIJECTION
-from training_utils import write_info_file
-from pathlib import Path
 
 jax.config.update("jax_enable_x64", True)
-plt.ioff()
+
+
+def transform_params(params, inverse:bool=True):
+    return jax.tree_util.tree_map(
+        lambda s: transform(s, DEFAULT_BIJECTION, inverse=inverse),
+        params,
+        is_leaf=lambda x: isinstance(x, nnx.State)
+    )
 
 
 def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
@@ -42,20 +44,15 @@ def neg_loglikelihood(y_true, mean, covariance, jitter=1e-6):
         + (y_true - mean).T @ covariance_inv @ (y_true - mean)
     )
 
+
 def mse(y_true, y_pred):
     return jnp.mean((y_true.squeeze() - y_pred.squeeze()) ** 2)
 
 
-def transform_params(params, inverse:bool=True):
-    return jax.tree_util.tree_map(
-        lambda s: transform(s, DEFAULT_BIJECTION, inverse=inverse),
-        params,
-        is_leaf=lambda x: isinstance(x, nnx.State)
-    )
-
 def loss_fn(model_params, model, X_test, y_test, n_samples=10):
     latent_grids = model_params["latent_grids"]
     latent_supports = model_params["latent_supports"]
+    # kernel_parameters = model_params["kernel_parameters"]
     kernel_parameters = transform_params(
         model_params["kernel_parameters"], 
         inverse=False
@@ -142,6 +139,12 @@ def training_loop(args, model, x_train, y_train, key):
         inverse=True
     )
 
+    freeze_mask = {
+        "latent_grids": args.freeze_x_latent,
+        "latent_supports": False,
+        "kernel_parameters": False, # Set to False to jointly optimize
+    }
+
     total_steps = args.epochs*(jnp.ceil(x_train.shape[0]/args.batch_size)) + args.epochs
     scheduler = optax.warmup_cosine_decay_schedule(
         init_value=args.learning_rate/100,
@@ -150,24 +153,25 @@ def training_loop(args, model, x_train, y_train, key):
         decay_steps=total_steps,
         end_value=args.learning_rate/10,
     )
-
-    optimizer = optax.adam(learning_rate=scheduler)
+    optimizer = optax.transforms.selective_transform(
+        optax.adam(learning_rate=scheduler), freeze_mask=freeze_mask
+    )
     opt_state = optimizer.init(model_params)
 
     # Training history 
     loss_history = {
-        "train_nll": [],
-        "train_mse": [],
+        "avg_nll": [],
+        "avg_mse": [],
     }
 
-    with tqdm.trange(1, args.epochs+1) as t:
+    with tqdm.trange(1, args.epochs + 1) as t:
         for epoch in t:
-            intra_nll = []
+            intra_epoch_loss = []
             intra_mse = []
 
             for i in range(0, x_train.shape[0], args.batch_size):
                 key, subkey = jr.split(key)
-                batch_x = x_train[i: i+args.batch_size, :]
+                batch_X = x_train[i: i+args.batch_size, :]
                 batch_y = y_train[i: i+args.batch_size, :]
 
                 model_params, opt_state, loss, batch_mse = training_step(
@@ -175,25 +179,32 @@ def training_loop(args, model, x_train, y_train, key):
                     model_params, 
                     opt_state, 
                     optimizer,
-                    batch_x, 
+                    batch_X, 
                     batch_y,
                     val_and_grad_fn,
                     mean_cov,
                     subkey
                 )
-                intra_nll.append(loss)
-                intra_mse.append(batch_mse)
 
-            train_nll = sum(intra_nll) / args.batch_size
-            train_mse = sum(intra_mse) / args.batch_size
-            loss_history["train_nll"].append(train_nll)
-            loss_history["train_mse"].append(train_mse)
+                if not jnp.isnan(loss):
+                    intra_epoch_loss.append(loss)
+                    intra_mse.append(batch_mse)
+
+                # TODO: Validation...
+
+            if len(intra_epoch_loss) > 0:
+                avg_nll = sum(intra_epoch_loss) / len(intra_epoch_loss)
+                avg_mse = sum(intra_mse) / len(intra_mse)
+                loss_history["avg_nll"].append(avg_nll)
+                loss_history["avg_mse"].append(avg_mse)
+
 
             if epoch % 10 == 0 or epoch == 1:
                 t.set_postfix_str(
-                    f"NLL: {train_nll:.4f}, MSE: {train_mse:.4f}",
+                    f"NLL: {avg_nll:.4f}, MSE: {avg_mse:.4f}",
                 refresh=False,
             )
+
     return loss_history
 
 def prediction(args, model, model_params, X):
@@ -211,7 +222,7 @@ def prediction(args, model, model_params, X):
             model_params["kernel_parameters"], 
             20, 
             key=jr.key(i)
-        ) # TODO: check why using a split key does not work...
+        )
         mu_batches.append(mu_batch)
         sigma2_batches.append(sigma2_batch)
 
@@ -221,7 +232,6 @@ def prediction(args, model, model_params, X):
 
     return mu_full, y_stddev 
     
-
 def save_parameters(model_params:Dict, path):
     path = ocp.test_utils.erase_and_create_empty(path)
     checkpointer = ocp.StandardCheckpointer()
@@ -233,33 +243,26 @@ def restore_parameters(path):
     return model_params
 
 def main(args):
-    working_dir = Path()
-    model_name = '-'.join(str(x) for x in args.model_size)
-    print("Model size:", model_name)
-    filename = model_name + " " + args.function
-
-    result_path = working_dir/"results"
-    result_path.mkdir(exist_ok=True)
-
-    dir_path = result_path/filename
-    dir_path.mkdir(exist_ok=True)
+    model_name = ''.join(str(x) for x in args.model_size)
 
     # Data initialization
     x1, x2, X, y = data_setup(args.function, args.n_samples)
 
-    # Initial train-test split
+    # TODO: Proper data setup depending on the function as preprocessing differs
+    match args.function:
+        case "himmelblau":
+            y = jnp.sqrt(y)
+        case "goldstein":
+            y = jnp.log(y)
+
     x_train, x_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_size, random_state=args.key
     )
 
-    # Standardize training data
     x_train_sd, x_train_mean, x_train_std = standardize_data(x_train)
-    y_train_sd, y_train_mean, y_train_std = standardize_data(y_train)
-
-    # Apply standardization to test data
     x_test_sd, _, _ = standardize_data(x_test, x_train_mean, x_train_std)
 
-    # Train-validation split 
+    # train-val split 
     # x_train, x_val, y_train, y_val = train_test_split(
     #     x_train_sd, y_train, test_size=args.test_size, random_state=args.key
     # )
@@ -274,28 +277,24 @@ def main(args):
         init_paramters=[2.0, 2.0], 
     )
 
-    # Training loop
+    # Training
     key = jr.PRNGKey(args.key)
-    train_start = time.perf_counter()
-    losses = training_loop(args, model, x_train_sd, y_train_sd, key)
-    train_end = time.perf_counter()
-    elapsed_training_time = train_end - train_start
+    losses = training_loop(args, model, x_train_sd, y_train, key)
 
-    # Loss and evaluation plots of training
+    # Loss and eval plots
     fig_loss, ax_loss = plt.subplots(nrows=2)
-    ax_loss[0].plot(losses["train_nll"])
+    ax_loss[0].plot(losses["avg_nll"])
     ax_loss[0].set_title("Negative log-likelihood")
-    ax_loss[1].plot(losses["train_mse"])
+    ax_loss[1].plot(losses["avg_mse"])
     ax_loss[1].set_title("Mean Squared Error")
     fig_loss.suptitle("Loss and evaluation metrics during training")
     plt.tight_layout()
 
-    loss_eval_filename = filename+"_loss_eval.png"
-    fig_loss.savefig(dir_path/loss_eval_filename, dpi=500)
-    plt.close()
+    filename = model_name + "-" + args.function
+    filepath = "./result_plots/gpkan/"
+    fig_loss.savefig(filepath+filename+"_loss_eval.png", dpi=500)
 
-    # Retrieve kernel parameters from trained model and transform back to original
-    # parameter space
+
     model_params = {
         "latent_grids": model.latent_grids,
         "latent_supports": model.latent_supports,
@@ -306,71 +305,36 @@ def main(args):
         inverse=False
     )
 
-    # Prediction on the test set
+    # Test
     print("\n", "Predicting on test set...", "\n")
-    test_start = time.perf_counter()
-    y_hat_test, _ = prediction(args, model, model_params, x_test_sd)
-    test_end = time.perf_counter()
-    y_hat_test_rescaled = y_hat_test * y_train_std + y_train_mean # rescaling to original scale
-    test_mse = mse(y_hat_test_rescaled.flatten(), y_test.flatten())
-    elapsed_test_time = test_end - test_start
+    mu_test, _ = prediction(args, model, model_params, x_test_sd)
+    test_mse = mse(y_test.flatten(), mu_test.flatten())
     print(f"Test MSE: {test_mse:.6f}")
 
-
-    # Prediction on the full dataset
+    # Do predictions on the entire dataset
     print("\n", "Predicting on full dataset...", "\n")
-    x_std, _, _ = standardize_data(X, x_train_mean, x_train_std) # standardize data w.r.t. training set parameters
-    pred_start = time.perf_counter()
-    mu_hat, sigma = prediction(args, model, model_params, x_std)
-    pred_end = time.perf_counter()
-    sigma_hat_rescaled = sigma * y_train_std # rescaling to original scale
-    mu_hat_rescaled = mu_hat * y_train_std + y_train_mean # rescaling to original scale
-    full_mse = mse(y.flatten(), mu_hat_rescaled.flatten())
-    elapsed_pred_time = pred_end - pred_start
+    x_std, _, _ = standardize_data(X, x_train_mean, x_train_std)
+    mu, sigma = prediction(args, model, model_params, x_std)
+    full_mse = mse(y.flatten(), mu.flatten())
     print(f"Full dataset MSE: {full_mse:.6f}")
 
-    # Plotting full results
     model_size = "-".join([str(x) for x in args.model_size])
     fig_pred, ax_pred = plot_results_normalized(
         x1,
         x2,
         y,
-        mu_hat_rescaled,
-        sigma_hat_rescaled,
+        mu,
+        sigma,
         figsize=(20, 5),
-        title=f"{model_size} GPKAN, MSE: {full_mse:.4f}",
-        clip_outliers=True
+        title=f"{model_size} GPKAN, MSE: {full_mse:.4f}"
     )
-    results_filename = filename+"_results.png"
-    fig_pred.savefig(dir_path/results_filename, dpi=500)
-    plt.close()
-    # plt.show()
+    fig_pred.savefig(filepath+filename+"_results.png", dpi=500)
+    plt.show()
+
+    # print(model_params["kernel_parameters"])
 
     # Save the parameters of the finally trained model...
-    # TODO: Does not work properly?
-    # params_path = dir_path/"model_params"
-    # save_parameters(model_params=model_params, path=params_path.absolute())
 
-    # Save the predictions...
-    mean_pred_filename = "mean_predictions.npy"
-    sigma_pred_filename = "sigma_predictions.npy"
-    jnp.save(dir_path/mean_pred_filename, mu_hat_rescaled)
-    jnp.save(dir_path/sigma_pred_filename, sigma_hat_rescaled)
-
-    # Data describing script run
-    write_info_file(
-        file_path=dir_path / "info.json",
-        model_name=model_name,
-        x=X,
-        x_train=x_train_sd,
-        x_test=x_test_sd,
-        args=args,
-        elapsed_training_time=float(elapsed_training_time),
-        elapsed_test_time=float(elapsed_test_time),
-        elapsed_pred_time=float(elapsed_pred_time),
-        test_mse=float(test_mse),
-        full_mse=float(full_mse),
-    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -391,6 +355,7 @@ if __name__ == "__main__":
         type=bool,
     )
 
+    # Data setup arguments
     parser.add_argument(
         "--function",
         nargs="?",
@@ -403,7 +368,6 @@ if __name__ == "__main__":
         ],
         default="himmelblau",
     )
-
     parser.add_argument("--n_samples", nargs="?", default=50, type=int)
 
     # Training loop arguments
